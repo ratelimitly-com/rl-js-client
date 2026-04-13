@@ -1,0 +1,31 @@
+{
+  "name": "ratelimitly-client",
+  "version": "1.0.0",
+  "description": "RateLimitly JavaScript R-Client for centralized rate limiting and load shedding",
+  "main": "client.js",
+  "scripts": {
+    "test": "node test_client.js",
+    "example": "node example_usage.js",
+    "start": "node client.js"
+  },
+  "keywords": [
+    "rate-limiting",
+    "load-shedding",
+    "client-library",
+    "ratelimitly",
+    "high-availability"
+  ],
+  "author": "RateLimitly Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/ratelimitly"
+  },
+  "bugs": {
+    "url": "https://github.com/your-org/ratelimitly/issues"
+  },
+  "homepage": "https://github.com/your-org/ratelimitly#readme"
+}

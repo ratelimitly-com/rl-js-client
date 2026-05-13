@@ -403,7 +403,7 @@ console.log(`Stable: ${stats.stableServers}`);
 ### Unit Tests
 
 ```bash
-node test_client.js
+npm test
 ```
 
 ### Integration Tests
@@ -414,8 +414,8 @@ node test_client.js
 #   export RCLIENT_TARGET_HOST=ratelimitly.local
 #   export RCLIENT_DNS_SERVER=127.0.0.1
 
-# Run client tests
-node test_client.js
+# Run integration tests
+npm run test:integration
 
 # Run examples
 node example_usage.js
@@ -550,6 +550,9 @@ npm install
 
 # Run tests
 npm test
+
+# Run integration tests against a live RateLimitly server and DNS SRV records
+npm run test:integration
 
 # Run examples
 npm run example

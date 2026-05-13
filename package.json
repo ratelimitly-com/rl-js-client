@@ -4,7 +4,8 @@
   "description": "RateLimitly JavaScript R-Client for centralized rate limiting and load shedding",
   "main": "client.js",
   "scripts": {
-    "test": "node test_client.js",
+    "test": "node test_unit.js",
+    "test:integration": "node test_client.js",
     "example": "node example_usage.js",
     "start": "node client.js"
   },

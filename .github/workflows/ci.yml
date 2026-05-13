@@ -31,10 +31,10 @@ jobs:
           node --check test_client.js
           node --check test_domain.js
           node --check test_simple.js
+          node --check test_unit.js
 
       - name: Unit tests
         run: npm test
 
       - name: Package dry run
         run: npm pack --dry-run
-

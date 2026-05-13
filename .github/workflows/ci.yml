@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    name: Node client
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Syntax check
+        run: |
+          node --check api_key_codec.js
+          node --check client.js
+          node --check example_usage.js
+          node --check test_client.js
+          node --check test_domain.js
+          node --check test_simple.js
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Package dry run
+        run: npm pack --dry-run
+

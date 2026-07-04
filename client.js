@@ -274,10 +274,10 @@ class WireProtocol {
         return decoded;
     }
     
-    static _encryptPDU(pduData, aesKey) {
+    static _encryptPDU(pduData, aesKey, aadPrefix) {
         const nonce = crypto.randomBytes(12);
         const cipher = crypto.createCipheriv('aes-256-gcm', aesKey, nonce);
-        // Don't set AAD - Python server doesn't use it
+        cipher.setAAD(Buffer.concat([aadPrefix, nonce]));
         
         let encrypted = cipher.update(pduData);
         cipher.final();
@@ -393,12 +393,13 @@ class WireProtocol {
         } else if (tenantConfig.authMethod === AuthMethod.AES_GCM) {
             const decoded = this._requireDecodedAuth(tenantConfig, 'aes');
             const aesKey = decoded.authSecret;
-            const { nonce, encrypted, authTag } = this._encryptPDU(pduBuffer.subarray(0, pduPos), aesKey);
-            
-            // AES auth header: 32 bytes total (4-byte header + 12-byte nonce + 16-byte auth_tag)
-            // Encrypted data follows after auth header
             buffer.writeUInt16LE(TLV_AUTH_AES, pos); pos += 2;
             buffer.writeUInt16LE(32, pos); pos += 2;  // Total TLV size including header
+            const { nonce, encrypted, authTag } = this._encryptPDU(
+                pduBuffer.subarray(0, pduPos),
+                aesKey,
+                buffer.subarray(0, pos)
+            );
             nonce.copy(buffer, pos); pos += 12;
             authTag.copy(buffer, pos); pos += 16;
             encrypted.copy(buffer, pos); pos += encrypted.length;
@@ -474,10 +475,13 @@ class WireProtocol {
         } else if (tenantConfig.authMethod === AuthMethod.AES_GCM) {
             const decoded = this._requireDecodedAuth(tenantConfig, 'aes');
             const aesKey = decoded.authSecret;
-            const { nonce, encrypted, authTag } = this._encryptPDU(pduData, aesKey);
-            
             buffer.writeUInt16LE(TLV_AUTH_AES, pos); pos += 2;
             buffer.writeUInt16LE(32, pos); pos += 2;  // Total TLV size including header
+            const { nonce, encrypted, authTag } = this._encryptPDU(
+                pduData,
+                aesKey,
+                buffer.subarray(0, pos)
+            );
             nonce.copy(buffer, pos); pos += 12;
             authTag.copy(buffer, pos); pos += 16;
             encrypted.copy(buffer, pos); pos += encrypted.length;
@@ -486,9 +490,9 @@ class WireProtocol {
         return buffer.subarray(0, pos);
     }
     
-    static _decryptPDU(encryptedData, nonce, authTag, aesKey) {
+    static _decryptPDU(encryptedData, nonce, authTag, aesKey, aad) {
         const decipher = crypto.createDecipheriv('aes-256-gcm', aesKey, nonce);
-        // Don't set AAD - Python server doesn't use it
+        decipher.setAAD(aad);
         decipher.setAuthTag(authTag);
         
         let decrypted = decipher.update(encryptedData);
@@ -516,6 +520,7 @@ class WireProtocol {
         pos += 2;  // padding
         
         // Parse auth header
+        const authStart = pos;
         const authType = data.readUInt16LE(pos); pos += 2;
         const authSize = data.readUInt16LE(pos); pos += 2;
         
@@ -549,11 +554,12 @@ class WireProtocol {
             const decoded = this._requireDecodedAuth(tenantConfig, 'aes');
             
             const nonce = data.subarray(pos, pos + 12); pos += 12;
+            const aad = data.subarray(0, authStart + 4 + 12);
             const authTag = data.subarray(pos, pos + 16); pos += 16;
             const encryptedData = data.subarray(pos);
             
             const aesKey = decoded.authSecret;
-            pduData = this._decryptPDU(encryptedData, nonce, authTag, aesKey);
+            pduData = this._decryptPDU(encryptedData, nonce, authTag, aesKey, aad);
         } else {
             throw new ProtocolError(`Unknown auth type: ${authType.toString(16)}`);
         }

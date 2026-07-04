@@ -8,6 +8,7 @@ const {
     ResourceRequest, LatencyGuard, ServiceLatencyBlock, WireProtocol, ServerTracker,
     RateLimitError, TimeoutError, createClient
 } = require('./client.js');
+const { encodeApiKey } = require('./api_key_codec.js');
 
 const SAMPLE_COOKIE_KEY_TENANT_12345 =
     'rl-cookie18ycqqqqqqqqqq54l6t0q5tnfml69zagcty9vx2jxh4mxqmkz9gjclx2cffh8pt9zqqqqzqqqqsqqqqqsqqqyqqqqqqxw5ukq';
@@ -70,6 +71,48 @@ function testWireProtocol(callback) {
     assert(latencyPacket.length > 0, 'Latency packet should not be empty');
     
     console.log('✅ Wire protocol tests passed');
+    callback();
+}
+
+function testAesAadTamperRejection(callback) {
+    console.log('Testing AES AAD authentication...');
+
+    const aesKey = encodeApiKey('aes', 3n, new Uint8Array(32).fill(3), {
+        rate_buckets_max: 65536,
+        latency_services_max: 1024,
+        metrics_labels_max: 4096,
+        latency_buffer_size_max: 64,
+        dedup_ttl_ms_max: 300
+    });
+    const tenantConfig = new TenantConfig(
+        'test.example.com',
+        3,
+        AuthMethod.AES_GCM,
+        aesKey
+    );
+    const resources = [new ResourceRequest('test_bucket', 1000, 10, 1)];
+    const packet = WireProtocol.createRateRequest(tenantConfig, resources);
+
+    const decoded = WireProtocol._requireDecodedAuth(tenantConfig, 'aes');
+    const nonce = packet.subarray(44, 56);
+    const authTag = packet.subarray(56, 72);
+    const encrypted = packet.subarray(72);
+    const aad = packet.subarray(0, 56);
+
+    const pdu = WireProtocol._decryptPDU(encrypted, nonce, authTag, decoded.authSecret, aad);
+    assert(pdu.readUInt16LE(0) === 0x5452, 'AES request should decrypt to rate request PDU');
+
+    const tamperedAad = Buffer.from(aad);
+    tamperedAad[4] ^= 0x01;
+    let failed = false;
+    try {
+        WireProtocol._decryptPDU(encrypted, nonce, authTag, decoded.authSecret, tamperedAad);
+    } catch (error) {
+        failed = true;
+    }
+    assert(failed, 'AES decryption should reject tampered AAD');
+
+    console.log('✅ AES AAD authentication tests passed');
     callback();
 }
 
@@ -217,6 +260,7 @@ function runAllTests() {
     
     const tests = [
         testWireProtocol,
+        testAesAadTamperRejection,
         testServerTracker,
         testClientConfiguration,
         testRateLimitingIntegration,

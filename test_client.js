@@ -69,6 +69,11 @@ function testWireProtocol(callback) {
         })
     ]);
     assert(latencyPacket.length > 0, 'Latency packet should not be empty');
+    assert(latencyPacket.length === 92, 'One-service latency packet should be 92 bytes with NONE auth');
+    assert(latencyPacket.readUInt16LE(44) === 0x524C, 'Latency PDU type should be LR');
+    assert(latencyPacket.readUInt16LE(46) === 48, 'One-service latency PDU should be 48 bytes');
+    assert(latencyPacket.readUInt16LE(52) === 1, 'Latency report should contain one service block');
+    assert(latencyPacket.readUInt32LE(88) === 85, 'Observed latency should end the 36-byte service block');
     
     console.log('✅ Wire protocol tests passed');
     callback();

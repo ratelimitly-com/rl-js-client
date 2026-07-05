@@ -18,6 +18,7 @@ const TLV_METRICS_LABEL = 0x4C4D;
 const PDU_RATE_REQUEST = 0x5452;
 const PDU_RATE_RESPONSE = 0x5252;
 const PDU_LATENCY_REPORT = 0x524C;
+const SERVICE_LATENCY_BLOCK_SIZE = 36;
 const SERVER_ID_EPOCH_S_2025 = 1735689600;
 const SERVER_ID_TIME_SHIFT = 23;
 
@@ -433,7 +434,7 @@ class WireProtocol {
         buffer.writeUInt8(0, pos); pos += 1;  // padding byte 2
         
         // Build PDU first
-        const pduSize = 12 + filteredBlocks.length * 40; // PDU header + service blocks (40 bytes each)
+        const pduSize = 12 + filteredBlocks.length * SERVICE_LATENCY_BLOCK_SIZE; // PDU header + service blocks
         const pduBuffer = Buffer.alloc(pduSize);
         let pduPos = 0;
         
@@ -446,7 +447,7 @@ class WireProtocol {
         pduBuffer.writeUInt16LE(filteredBlocks.length, pduPos); pduPos += 2; // service_count
         pduBuffer.writeUInt16LE(0, pduPos); pduPos += 2; // padding
         
-        // Service Latency Blocks (40 bytes each)
+        // Service Latency Blocks (36 bytes each)
         for (const block of filteredBlocks) {
             const serviceIdBytes = Buffer.from(block.serviceId).subarray(0, 16);
             serviceIdBytes.copy(pduBuffer, pduPos);
@@ -456,7 +457,6 @@ class WireProtocol {
             pduBuffer.writeUInt32LE(block.bufferSize, pduPos); pduPos += 4;
             pduBuffer.writeUInt32LE(block.minSampleThreshold, pduPos); pduPos += 4;
             pduBuffer.writeUInt32LE(Math.floor(block.observedLatency), pduPos); pduPos += 4;
-            pduBuffer.writeUInt32LE(0, pduPos); pduPos += 4; // padding (4 bytes) to match GuardBlock size
         }
         
         const pduData = pduBuffer.subarray(0, pduPos);

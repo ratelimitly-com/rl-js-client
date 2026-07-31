@@ -6,7 +6,7 @@
 const {
     RClient, RClientConfig, TenantConfig, AuthMethod,
     ResourceRequest, LatencyGuard, ServiceLatencyBlock, WireProtocol, ServerTracker,
-    RateLimitError, TimeoutError, createClient
+    RateLimitError, TimeoutError, CanonicalIds, createClient
 } = require('./client.js');
 const { encodeApiKey } = require('./api_key_codec.js');
 
@@ -39,41 +39,79 @@ function serverIdFromStartMs(startMs) {
 
 function testWireProtocol(callback) {
     console.log('Testing wire protocol...');
+
+    assert(
+        CanonicalIds.bucketId('checkout', 1000, 100).toString('hex')
+            === 'f5cf3ad8b8406854b596ba3614f16eff',
+        'Canonical checkout bucket ID should match the central vector'
+    );
+    assert(
+        CanonicalIds.latencyTrackerId('inventory-backend', 10000, 100, 32, 5).toString('hex')
+            === '0320bf15b884bda367a17e5ffb650441',
+        'Canonical inventory latency-tracker ID should match the central vector'
+    );
+    assert(
+        CanonicalIds.latencyTrackerId('café', 60000, 200, 50, 3).toString('hex')
+            === '5ea75b027e7c4717eb7acf91d83b9c4e',
+        'Canonical UTF-8 latency-tracker ID should match the central vector'
+    );
+    assert(
+        CanonicalIds.latencyTrackerId(
+            Buffer.from('62696e61727900747261636b6572', 'hex'),
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF
+        ).toString('hex') === '0696ca52a5bfc5e9c46ba90f3110b728',
+        'Canonical embedded-NUL latency-tracker ID should match the central vector'
+    );
     
     const tenantConfig = new TenantConfig('test.example.com', 12345, AuthMethod.NONE);
     
-    const resources = [new ResourceRequest('test_bucket', 1000, 10, 3)];
+    const resources = [new ResourceRequest('checkout', 1000, 100, 3)];
     const guards = [new LatencyGuard({
-        serviceId: 'test_service',
+        latencyTrackerName: 'inventory-backend',
         thresholdMs: 100.0,
         ttlMs: 10000,
         maxSamples: 100,
-        bufferSize: 20,
-        minSampleThreshold: 8
+        bufferSize: 32,
+        minSampleThreshold: 5
     })];
     
     // Test rate request creation
     const packet = WireProtocol.createRateRequest(tenantConfig, resources, guards);
     assert(packet.length > 0, 'Packet should not be empty');
     assert(packet.readUInt16LE(0) === 0x4C52, 'Should start with tenant TLV');
+    assert(
+        packet.subarray(56, 72).toString('hex') === '0320bf15b884bda367a17e5ffb650441',
+        'Guard should carry the canonical latency-tracker ID'
+    );
+    assert(
+        packet.subarray(96, 112).toString('hex') === 'f5cf3ad8b8406854b596ba3614f16eff',
+        'Resource should carry the canonical bucket ID'
+    );
     
     // Test latency report creation
     const latencyPacket = WireProtocol.createLatencyReport(tenantConfig, [
         new ServiceLatencyBlock({
-            serviceId: 'test_service',
+            latencyTrackerName: 'inventory-backend',
             observedLatency: 85.5,
             ttlMs: 10000,
             maxSamples: 100,
-            bufferSize: 20,
-            minSampleThreshold: 8
+            bufferSize: 32,
+            minSampleThreshold: 5
         })
     ]);
     assert(latencyPacket.length > 0, 'Latency packet should not be empty');
     assert(latencyPacket.length === 92, 'One-service latency packet should be 92 bytes with NONE auth');
     assert(latencyPacket.readUInt16LE(44) === 0x524C, 'Latency PDU type should be LR');
     assert(latencyPacket.readUInt16LE(46) === 48, 'One-service latency PDU should be 48 bytes');
-    assert(latencyPacket.readUInt16LE(52) === 1, 'Latency report should contain one service block');
-    assert(latencyPacket.readUInt32LE(88) === 85, 'Observed latency should end the 36-byte service block');
+    assert(latencyPacket.readUInt16LE(52) === 1, 'Latency report should contain one report block');
+    assert(
+        latencyPacket.subarray(56, 72).toString('hex') === '0320bf15b884bda367a17e5ffb650441',
+        'Latency report should use the same canonical tracker ID as the guard'
+    );
+    assert(latencyPacket.readUInt32LE(88) === 85, 'Observed latency should end the 36-byte report block');
     
     console.log('✅ Wire protocol tests passed');
     callback();

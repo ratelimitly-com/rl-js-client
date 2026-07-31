@@ -61,7 +61,7 @@ async function exampleBasicUsage() {
             console.log('❌ Rate limit exceeded - request rejected');
             for (const resourceResult of result.resourceResults) {
                 if (resourceResult.tokensDeficit > 0) {
-                    console.log(`   Resource '${resourceResult.bucketId}' deficit: ${resourceResult.tokensDeficit}`);
+                    console.log(`   Resource '${resourceResult.bucketName}' deficit: ${resourceResult.tokensDeficit}`);
                 }
             }
         }
@@ -83,7 +83,7 @@ async function exampleWithGuards() {
     
     const guards = [
         new LatencyGuard({
-            serviceId: 'database',
+            latencyTrackerName: 'database',
             thresholdMs: 100.0,
             ttlMs: 10000,
             maxSamples: 100,
@@ -91,7 +91,7 @@ async function exampleWithGuards() {
             minSampleThreshold: 8
         }),
         new LatencyGuard({
-            serviceId: 'cache_service',
+            latencyTrackerName: 'cache_service',
             thresholdMs: 10.0,
             ttlMs: 10000,
             maxSamples: 100,
@@ -108,7 +108,7 @@ async function exampleWithGuards() {
         // Check guard results
         for (const guardResult of result.guardResults) {
             const status = guardResult.passed ? '✅ PASS' : '❌ FAIL';
-            console.log(`Guard '${guardResult.serviceId}': ${status} ` +
+            console.log(`Guard '${guardResult.latencyTrackerName}': ${status} ` +
                        `(current: ${guardResult.currentLatencyMs}ms, ` +
                        `threshold: ${guardResult.thresholdMs}ms)`);
         }
@@ -116,9 +116,9 @@ async function exampleWithGuards() {
         // Check resource results
         for (const resourceResult of result.resourceResults) {
             if (resourceResult.tokensDeficit === 0) {
-                console.log(`Resource '${resourceResult.bucketId}': ✅ Granted`);
+                console.log(`Resource '${resourceResult.bucketName}': ✅ Granted`);
             } else {
-                console.log(`Resource '${resourceResult.bucketId}': ❌ Deficit ${resourceResult.tokensDeficit}`);
+                console.log(`Resource '${resourceResult.bucketName}': ❌ Deficit ${resourceResult.tokensDeficit}`);
             }
         }
         
@@ -129,7 +129,7 @@ async function exampleWithGuards() {
             const dbLatency = Date.now() - dbStart;
             
             const dbBlock = new ServiceLatencyBlock({
-                serviceId: 'database',
+                latencyTrackerName: 'database',
                 observedLatency: dbLatency,
                 ttlMs: 10000,
                 maxSamples: 100,
@@ -143,7 +143,7 @@ async function exampleWithGuards() {
             const cacheLatency = Date.now() - cacheStart;
             
             const cacheBlock = new ServiceLatencyBlock({
-                serviceId: 'cache_service',
+                latencyTrackerName: 'cache_service',
                 observedLatency: cacheLatency,
                 ttlMs: 10000,
                 maxSamples: 100,
@@ -187,13 +187,13 @@ async function exampleAuthentication() {
     }
 }
 
-async function rateLimitedOperation(client, bucketId, windowMs = 60000, limit = 100, operation) {
-    const resources = [new ResourceRequest(bucketId, windowMs, limit, 1)];
+async function rateLimitedOperation(client, bucketName, windowMs = 60000, limit = 100, operation) {
+    const resources = [new ResourceRequest(bucketName, windowMs, limit, 1)];
     
     try {
         const result = await checkRateLimitAsync(client, resources);
         if (!result.success) {
-            throw new Error(`Rate limit exceeded for ${bucketId}`);
+            throw new Error(`Rate limit exceeded for ${bucketName}`);
         }
         
         const startTime = Date.now();
@@ -202,7 +202,7 @@ async function rateLimitedOperation(client, bucketId, windowMs = 60000, limit = 
         // Report operation latency
         const latency = Date.now() - startTime;
         const block = new ServiceLatencyBlock({
-            serviceId: bucketId,
+            latencyTrackerName: bucketName,
             observedLatency: latency,
             ttlMs: 10000,
             maxSamples: 100,
@@ -281,7 +281,7 @@ async function exampleBulkOperations() {
     
     const guards = [
         new LatencyGuard({
-            serviceId: 'primary_db',
+            latencyTrackerName: 'primary_db',
             thresholdMs: 50.0,
             ttlMs: 10000,
             maxSamples: 100,
@@ -289,7 +289,7 @@ async function exampleBulkOperations() {
             minSampleThreshold: 8
         }),
         new LatencyGuard({
-            serviceId: 'replica_db',
+            latencyTrackerName: 'replica_db',
             thresholdMs: 100.0,
             ttlMs: 10000,
             maxSamples: 100,
@@ -311,7 +311,7 @@ async function exampleBulkOperations() {
         
         if (failedResources.length > 0) {
             for (const resource of failedResources) {
-                console.log(`  ❌ ${resource.bucketId}: deficit ${resource.tokensDeficit}`);
+                console.log(`  ❌ ${resource.bucketName}: deficit ${resource.tokensDeficit}`);
             }
         }
         
@@ -320,7 +320,7 @@ async function exampleBulkOperations() {
             await simulateBulkOperations();
             await reportLatencyAsync(client, [
                 new ServiceLatencyBlock({
-                    serviceId: 'primary_db',
+                    latencyTrackerName: 'primary_db',
                     observedLatency: 45.0,
                     ttlMs: 10000,
                     maxSamples: 100,
@@ -328,7 +328,7 @@ async function exampleBulkOperations() {
                     minSampleThreshold: 8
                 }),
                 new ServiceLatencyBlock({
-                    serviceId: 'replica_db',
+                    latencyTrackerName: 'replica_db',
                     observedLatency: 85.0,
                     ttlMs: 10000,
                     maxSamples: 100,

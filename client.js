@@ -18,7 +18,9 @@ const TLV_METRICS_LABEL = 0x4C4D;
 const PDU_RATE_REQUEST = 0x5452;
 const PDU_RATE_RESPONSE = 0x5252;
 const PDU_LATENCY_REPORT = 0x524C;
-const SERVICE_LATENCY_BLOCK_SIZE = 36;
+const LATENCY_REPORT_BLOCK_SIZE = 36;
+const RESOURCE_ID_DOMAIN = Buffer.from('ratelimitly.resource.v1\0', 'ascii');
+const LATENCY_TRACKER_ID_DOMAIN = Buffer.from('ratelimitly.latency-tracker.v1\0', 'ascii');
 const SERVER_ID_EPOCH_S_2025 = 1735689600;
 const SERVER_ID_TIME_SHIFT = 23;
 
@@ -28,9 +30,45 @@ const AuthMethod = {
     AES_GCM: 'aes_gcm'
 };
 
+class CanonicalIds {
+    static bucketId(bucketName, windowSizeMs, rateLimit) {
+        return this._derive(RESOURCE_ID_DOMAIN, bucketName, [windowSizeMs, rateLimit]);
+    }
+
+    static latencyTrackerId(latencyTrackerName, ttlMs, maxSamples, bufferSize, minSampleThreshold) {
+        return this._derive(
+            LATENCY_TRACKER_ID_DOMAIN,
+            latencyTrackerName,
+            [ttlMs, maxSamples, bufferSize, minSampleThreshold]
+        );
+    }
+
+    static _derive(domain, name, fields) {
+        const nameBytes = typeof name === 'string'
+            ? Buffer.from(name, 'utf8')
+            : Buffer.from(name);
+        if (nameBytes.length > 0xFFFF_FFFF) {
+            throw new RangeError('canonical ID name length must fit uint32');
+        }
+
+        const input = Buffer.alloc(domain.length + 4 + nameBytes.length + (fields.length * 4));
+        let pos = 0;
+        domain.copy(input, pos); pos += domain.length;
+        input.writeUInt32LE(nameBytes.length, pos); pos += 4;
+        nameBytes.copy(input, pos); pos += nameBytes.length;
+        for (const field of fields) {
+            if (!Number.isInteger(field) || field < 0 || field > 0xFFFF_FFFF) {
+                throw new RangeError('canonical ID fields must be uint32 integers');
+            }
+            input.writeUInt32LE(field, pos); pos += 4;
+        }
+        return crypto.createHash('blake2s256').update(input).digest().subarray(0, 16);
+    }
+}
+
 class ResourceRequest {
-    constructor(bucketId, windowSizeMs, rateLimit, tokensRequested) {
-        this.bucketId = bucketId;
+    constructor(bucketName, windowSizeMs, rateLimit, tokensRequested) {
+        this.bucketName = bucketName;
         this.windowSizeMs = windowSizeMs;
         this.rateLimit = rateLimit;
         this.tokensRequested = tokensRequested;
@@ -44,14 +82,14 @@ class LatencyGuard {
             throw new Error('LatencyGuard config object is required');
         }
         
-        const required = ['serviceId', 'thresholdMs', 'ttlMs', 'maxSamples', 'bufferSize', 'minSampleThreshold'];
+        const required = ['latencyTrackerName', 'thresholdMs', 'ttlMs', 'maxSamples', 'bufferSize', 'minSampleThreshold'];
         for (const param of required) {
             if (config[param] === undefined || config[param] === null) {
                 throw new Error(`LatencyGuard config.${param} is required`);
             }
         }
         
-        this.serviceId = config.serviceId;
+        this.latencyTrackerName = config.latencyTrackerName;
         this.thresholdMs = config.thresholdMs;
         this.ttlMs = config.ttlMs;
         this.maxSamples = config.maxSamples;
@@ -67,14 +105,14 @@ class ServiceLatencyBlock {
             throw new Error('ServiceLatencyBlock config object is required');
         }
         
-        const required = ['serviceId', 'observedLatency', 'ttlMs', 'maxSamples', 'bufferSize', 'minSampleThreshold'];
+        const required = ['latencyTrackerName', 'observedLatency', 'ttlMs', 'maxSamples', 'bufferSize', 'minSampleThreshold'];
         for (const param of required) {
             if (config[param] === undefined || config[param] === null) {
                 throw new Error(`ServiceLatencyBlock config.${param} is required`);
             }
         }
         
-        this.serviceId = config.serviceId;
+        this.latencyTrackerName = config.latencyTrackerName;
         this.observedLatency = config.observedLatency;
         this.ttlMs = config.ttlMs;
         this.maxSamples = config.maxSamples;
@@ -84,8 +122,8 @@ class ServiceLatencyBlock {
 }
 
 class GuardResult {
-    constructor(serviceId, thresholdMs, currentLatencyMs, passed) {
-        this.serviceId = serviceId;
+    constructor(latencyTrackerName, thresholdMs, currentLatencyMs, passed) {
+        this.latencyTrackerName = latencyTrackerName;
         this.thresholdMs = thresholdMs;
         this.currentLatencyMs = currentLatencyMs;
         this.passed = passed;
@@ -93,8 +131,8 @@ class GuardResult {
 }
 
 class ResourceResult {
-    constructor(bucketId, tokensDeficit, actualRate) {
-        this.bucketId = bucketId;
+    constructor(bucketName, tokensDeficit, actualRate) {
+        this.bucketName = bucketName;
         this.tokensDeficit = tokensDeficit;
         this.actualRate = actualRate;
     }
@@ -251,7 +289,7 @@ class WireProtocol {
         for (const guard of guards) {
             if (guard.bufferSize > limit) {
                 throw new ProtocolError(
-                    `Latency guard '${guard.serviceId}' bufferSize ${guard.bufferSize} exceeds tenant quota latency_buffer_size_max ${limit}`
+                    `Latency guard '${guard.latencyTrackerName}' bufferSize ${guard.bufferSize} exceeds tenant quota latency_buffer_size_max ${limit}`
                 );
             }
         }
@@ -341,9 +379,14 @@ class WireProtocol {
         
         // Guards
         for (const guard of guards) {
-            const serviceId = Buffer.from(guard.serviceId).subarray(0, 16);
-            serviceId.copy(pduBuffer, pduPos);
-            pduBuffer.fill(0, pduPos + serviceId.length, pduPos + 16); pduPos += 16;
+            const latencyTrackerId = CanonicalIds.latencyTrackerId(
+                guard.latencyTrackerName,
+                guard.ttlMs,
+                guard.maxSamples,
+                guard.bufferSize,
+                guard.minSampleThreshold
+            );
+            latencyTrackerId.copy(pduBuffer, pduPos); pduPos += 16;
             pduBuffer.writeUInt32LE(guard.ttlMs, pduPos); pduPos += 4;
             pduBuffer.writeUInt32LE(guard.maxSamples, pduPos); pduPos += 4;
             pduBuffer.writeUInt32LE(guard.bufferSize, pduPos); pduPos += 4;
@@ -354,9 +397,12 @@ class WireProtocol {
         
         // Resources
         for (const resource of resources) {
-            const bucketId = Buffer.from(resource.bucketId).subarray(0, 16);
-            bucketId.copy(pduBuffer, pduPos);
-            pduBuffer.fill(0, pduPos + bucketId.length, pduPos + 16); pduPos += 16;
+            const bucketId = CanonicalIds.bucketId(
+                resource.bucketName,
+                resource.windowSizeMs,
+                resource.rateLimit
+            );
+            bucketId.copy(pduBuffer, pduPos); pduPos += 16;
             pduBuffer.writeUInt32LE(resource.windowSizeMs, pduPos); pduPos += 4;
             pduBuffer.writeUInt32LE(resource.rateLimit, pduPos); pduPos += 4;
             pduBuffer.writeUInt16LE(resource.tokensRequested, pduPos); pduPos += 2;
@@ -434,7 +480,7 @@ class WireProtocol {
         buffer.writeUInt8(0, pos); pos += 1;  // padding byte 2
         
         // Build PDU first
-        const pduSize = 12 + filteredBlocks.length * SERVICE_LATENCY_BLOCK_SIZE; // PDU header + service blocks
+        const pduSize = 12 + filteredBlocks.length * LATENCY_REPORT_BLOCK_SIZE;
         const pduBuffer = Buffer.alloc(pduSize);
         let pduPos = 0;
         
@@ -447,11 +493,16 @@ class WireProtocol {
         pduBuffer.writeUInt16LE(filteredBlocks.length, pduPos); pduPos += 2; // service_count
         pduBuffer.writeUInt16LE(0, pduPos); pduPos += 2; // padding
         
-        // Service Latency Blocks (36 bytes each)
+        // Latency report blocks (36 bytes each)
         for (const block of filteredBlocks) {
-            const serviceIdBytes = Buffer.from(block.serviceId).subarray(0, 16);
-            serviceIdBytes.copy(pduBuffer, pduPos);
-            pduBuffer.fill(0, pduPos + serviceIdBytes.length, pduPos + 16); pduPos += 16;
+            const latencyTrackerId = CanonicalIds.latencyTrackerId(
+                block.latencyTrackerName,
+                block.ttlMs,
+                block.maxSamples,
+                block.bufferSize,
+                block.minSampleThreshold
+            );
+            latencyTrackerId.copy(pduBuffer, pduPos); pduPos += 16;
             pduBuffer.writeUInt32LE(block.ttlMs, pduPos); pduPos += 4;
             pduBuffer.writeUInt32LE(block.maxSamples, pduPos); pduPos += 4;
             pduBuffer.writeUInt32LE(block.bufferSize, pduPos); pduPos += 4;
@@ -502,7 +553,7 @@ class WireProtocol {
         return decrypted;
     }
     
-    static parseRateResponse(data, tenantConfig = null) {
+    static parseRateResponse(data, tenantConfig = null, resources = [], guards = []) {
         let pos = 0;
         
         // Parse tenant header
@@ -580,7 +631,7 @@ class WireProtocol {
         const guardResults = [];
         
         for (let i = 0; i < guardCount; i++) {
-            const serviceIdBytes = pduData.subarray(pos, pos + 16); pos += 16;
+            const latencyTrackerId = pduData.subarray(pos, pos + 16); pos += 16;
             const ttlMs = pduData.readUInt32LE(pos); pos += 4;
             const maxSamples = pduData.readUInt32LE(pos); pos += 4;
             const bufferSize = pduData.readUInt32LE(pos); pos += 4;
@@ -588,25 +639,49 @@ class WireProtocol {
             const thresholdMs = pduData.readUInt32LE(pos); pos += 4;
             const currentLatencyMs = pduData.readUInt32LE(pos); pos += 4;
             
-            const serviceId = serviceIdBytes.toString().replace(/\0+$/, '');
+            const guard = guards[i];
+            if (guard) {
+                const expectedId = CanonicalIds.latencyTrackerId(
+                    guard.latencyTrackerName,
+                    guard.ttlMs,
+                    guard.maxSamples,
+                    guard.bufferSize,
+                    guard.minSampleThreshold
+                );
+                if (!latencyTrackerId.equals(expectedId)) {
+                    throw new ProtocolError(`Guard ${i} latency-tracker ID does not match the request`);
+                }
+            }
+            const latencyTrackerName = guard ? guard.latencyTrackerName : null;
             const passed = currentLatencyMs <= thresholdMs;
             
-            guardResults.push(new GuardResult(serviceId, thresholdMs, currentLatencyMs, passed));
+            guardResults.push(new GuardResult(latencyTrackerName, thresholdMs, currentLatencyMs, passed));
         }
         
         // Parse resources
         const resourceResults = [];
         
         for (let i = 0; i < resourceCount; i++) {
-            const bucketIdBytes = pduData.subarray(pos, pos + 16); pos += 16;
+            const bucketId = pduData.subarray(pos, pos + 16); pos += 16;
             const windowMs = pduData.readUInt32LE(pos); pos += 4;
             const actualRate = pduData.readUInt32LE(pos); pos += 4;
             const tokensDeficit = pduData.readUInt16LE(pos); pos += 2;
             const padding = pduData.readUInt16LE(pos); pos += 2; // skip alignment padding
             
-            const bucketId = bucketIdBytes.toString().replace(/\0+$/, '');
+            const resource = resources[i];
+            if (resource) {
+                const expectedId = CanonicalIds.bucketId(
+                    resource.bucketName,
+                    resource.windowSizeMs,
+                    resource.rateLimit
+                );
+                if (!bucketId.equals(expectedId)) {
+                    throw new ProtocolError(`Resource ${i} bucket ID does not match the request`);
+                }
+            }
+            const bucketName = resource ? resource.bucketName : null;
             
-            resourceResults.push(new ResourceResult(bucketId, tokensDeficit, actualRate));
+            resourceResults.push(new ResourceResult(bucketName, tokensDeficit, actualRate));
         }
         
         return { serverId, guardResults, resourceResults };
@@ -941,7 +1016,12 @@ class RClient {
             
             try {
                 // Parse response
-                const { serverId, guardResults, resourceResults } = WireProtocol.parseRateResponse(response, this.config.tenant);
+                const { serverId, guardResults, resourceResults } = WireProtocol.parseRateResponse(
+                    response,
+                    this.config.tenant,
+                    resources,
+                    guards || []
+                );
                 
                 // Determine overall success
                 const guardsPassed = guardResults.every(g => g.passed);
@@ -1005,6 +1085,7 @@ module.exports = {
     GuardResult,
     ResourceResult,
     AuthMethod,
+    CanonicalIds,
     RateLimitError,
     TimeoutError,
     AuthenticationError,

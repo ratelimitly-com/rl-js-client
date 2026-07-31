@@ -1,4 +1,9 @@
-const { createClient, ResourceRequest, LatencyGuard } = require('./client.js');
+const {
+    createClient,
+    ResourceRequest,
+    LatencyGuard,
+    ServiceLatencyBlock
+} = require('./client.js');
 
 function test() {
     console.log('Testing JavaScript R-Client with domain name...');
@@ -7,7 +12,14 @@ function test() {
     const client = createClient('ratelimitly.local', 12345);
     
     const resources = [new ResourceRequest('api_calls', 60000, 100, 1)];
-    const guards = [new LatencyGuard('database', 100.0)];
+    const guards = [new LatencyGuard({
+        latencyTrackerName: 'database',
+        thresholdMs: 100,
+        ttlMs: 10000,
+        maxSamples: 100,
+        bufferSize: 20,
+        minSampleThreshold: 8
+    })];
     
     console.log('Testing with domain name: ratelimitly.local');
     
@@ -25,7 +37,14 @@ function test() {
         console.log('   Resources:', result.resourceResults.length);
         
         // Test latency reporting
-        client.reportLatency('database', 85.5, (latencyError) => {
+        client.reportLatency([new ServiceLatencyBlock({
+            latencyTrackerName: 'database',
+            observedLatency: 85.5,
+            ttlMs: 10000,
+            maxSamples: 100,
+            bufferSize: 20,
+            minSampleThreshold: 8
+        })], (latencyError) => {
             if (latencyError) {
                 console.warn('⚠️  Latency report failed:', latencyError.message);
             } else {

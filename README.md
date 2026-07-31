@@ -45,7 +45,7 @@ client.checkRateLimit(resources, (error, result) => {
 
     performApiCall(() => {
         const block = new ServiceLatencyBlock({
-            serviceId: 'api_service',
+            latencyTrackerName: 'api_service',
             observedLatency: 85.5,
             ttlMs: 10000,
             maxSamples: 100,
@@ -106,7 +106,7 @@ Defines a rate-limited resource.
 
 ```javascript
 class ResourceRequest {
-    constructor(bucketId, windowSizeMs, rateLimit, tokensRequested)
+    constructor(bucketName, windowSizeMs, rateLimit, tokensRequested)
 }
 ```
 
@@ -120,7 +120,7 @@ class LatencyGuard {
 
 // Usage
 const guard = new LatencyGuard({
-    serviceId: 'database',
+    latencyTrackerName: 'database',
     thresholdMs: 100,
     ttlMs: 10000,
     maxSamples: 100,
@@ -139,7 +139,7 @@ class ServiceLatencyBlock {
 
 // Usage
 const block = new ServiceLatencyBlock({
-    serviceId: 'database',
+    latencyTrackerName: 'database',
     observedLatency: 85.5,
     ttlMs: 10000,
     maxSamples: 100,
@@ -147,6 +147,24 @@ const block = new ServiceLatencyBlock({
     minSampleThreshold: 8
 });
 ```
+
+#### Content-defined IDs
+
+The public request objects accept names, not precomputed wire IDs. The client
+derives each 16-byte identifier from the name and the complete definition of
+the corresponding server-side state:
+
+- bucket ID: `bucketName`, `windowSizeMs`, and `rateLimit`;
+- latency-tracker ID: `latencyTrackerName`, `ttlMs`, `maxSamples`,
+  `bufferSize`, and `minSampleThreshold`.
+
+`thresholdMs` is a guard condition and `observedLatency` is a sample, so neither
+participates in latency-tracker identity. A guard and a report with the same
+tracker name and stored-state settings therefore use the same ID. Changing any
+identity-defining setting creates a different bucket or tracker.
+
+`CanonicalIds.bucketId(...)` and `CanonicalIds.latencyTrackerId(...)` expose
+the same derivation for code that needs the exact 16-byte `Buffer`.
 
 #### `RateLimitResult`
 Result of a rate limit check.
@@ -216,7 +234,7 @@ client.checkRateLimit(resources, (error, result) => {
 ```javascript
 const resources = [new ResourceRequest('db_queries', 1000, 100, 1)];
 const guards = [new LatencyGuard({
-    serviceId: 'database',
+    latencyTrackerName: 'database',
     thresholdMs: 50.0,
     ttlMs: 10000,
     maxSamples: 100,
@@ -232,7 +250,7 @@ client.checkRateLimit(resources, guards, (error, result) => {
             const latency = Date.now() - start;
             
             const block = new ServiceLatencyBlock({
-                serviceId: 'database',
+                latencyTrackerName: 'database',
                 observedLatency: latency,
                 ttlMs: 10000,
                 maxSamples: 100,
@@ -295,12 +313,12 @@ if (result.success) {
 ### 5. Context Pattern
 
 ```javascript
-async function rateLimitedOperation(client, bucketId, limit, operation) {
-    const resources = [new ResourceRequest(bucketId, 60000, limit, 1)];
+async function rateLimitedOperation(client, bucketName, limit, operation) {
+    const resources = [new ResourceRequest(bucketName, 60000, limit, 1)];
     const result = await checkRateLimitAsync(client, resources);
     
     if (!result.success) {
-        throw new Error(`Rate limit exceeded for ${bucketId}`);
+        throw new Error(`Rate limit exceeded for ${bucketName}`);
     }
     
     const start = Date.now();
@@ -308,7 +326,7 @@ async function rateLimitedOperation(client, bucketId, limit, operation) {
     
     const latency = Date.now() - start;
     const block = new ServiceLatencyBlock({
-        serviceId: bucketId,
+        latencyTrackerName: bucketName,
         observedLatency: latency,
         ttlMs: 10000,
         maxSamples: 100,
@@ -335,7 +353,7 @@ const resources = [
 
 const guards = [
     new LatencyGuard({
-        serviceId: 'primary_db',
+        latencyTrackerName: 'primary_db',
         thresholdMs: 50.0,
         ttlMs: 10000,
         maxSamples: 100,
@@ -343,7 +361,7 @@ const guards = [
         minSampleThreshold: 8
     }),
     new LatencyGuard({
-        serviceId: 'cache',
+        latencyTrackerName: 'cache',
         thresholdMs: 10.0,
         ttlMs: 10000,
         maxSamples: 100,

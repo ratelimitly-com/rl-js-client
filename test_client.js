@@ -6,12 +6,22 @@
 const {
     RClient, RClientConfig, TenantConfig, AuthMethod,
     ResourceRequest, LatencyGuard, ServiceLatencyBlock, WireProtocol, ServerTracker,
-    RateLimitError, TimeoutError, CanonicalIds, createClient
+    RateLimitError, TimeoutError, CanonicalIds, RequestPolicy, createClient
 } = require('./client.js');
 const { encodeApiKey } = require('./api_key_codec.js');
 
-const SAMPLE_COOKIE_KEY_TENANT_12345 =
-    'rl-cookie18ycqqqqqqqqqq54l6t0q5tnfml69zagcty9vx2jxh4mxqmkz9gjclx2cffh8pt9zqqqqzqqqqsqqqqqsqqqyqqqqqqxw5ukq';
+const SAMPLE_QUOTAS = {
+    rate_buckets_max: 65536,
+    latency_services_max: 1024,
+    metrics_labels_max: 4096,
+    latency_buffer_size_max: 32,
+    dedup_ttl_ms_max: 300,
+    rate_window_size_ms_max: 0xffffffff
+};
+const SAMPLE_NONE_KEY_TENANT_1 = encodeApiKey('none', 1n, new Uint8Array(0), SAMPLE_QUOTAS);
+const SAMPLE_COOKIE_KEY_TENANT_12345 = encodeApiKey(
+    'cookie', 12345n, new Uint8Array(32).fill(3), SAMPLE_QUOTAS
+);
 const SERVER_ID_EPOCH_S_2025 = 1735689600;
 const SERVER_ID_TIME_SHIFT = 23;
 
@@ -66,7 +76,7 @@ function testWireProtocol(callback) {
         'Canonical embedded-NUL latency-tracker ID should match the central vector'
     );
     
-    const tenantConfig = new TenantConfig('test.example.com', 12345, AuthMethod.NONE);
+    const tenantConfig = new TenantConfig('test.example.com', 1, AuthMethod.NONE, SAMPLE_NONE_KEY_TENANT_1);
     
     const resources = [new ResourceRequest('checkout', 1000, 100, 3)];
     const guards = [new LatencyGuard({
@@ -125,7 +135,8 @@ function testAesAadTamperRejection(callback) {
         latency_services_max: 1024,
         metrics_labels_max: 4096,
         latency_buffer_size_max: 64,
-        dedup_ttl_ms_max: 300
+        dedup_ttl_ms_max: 300,
+        rate_window_size_ms_max: 0xffffffff
     });
     const tenantConfig = new TenantConfig(
         'test.example.com',
@@ -184,10 +195,12 @@ function testClientConfiguration(callback) {
     console.log('Testing client configuration...');
     
     const tenantConfig = new TenantConfig('127.0.0.1', 12345, AuthMethod.COOKIE, SAMPLE_COOKIE_KEY_TENANT_12345);
-    const config = new RClientConfig(tenantConfig, { timeoutMs: 500, retryAttempts: 1 });
+    const config = new RClientConfig(tenantConfig, {
+        requestPolicy: new RequestPolicy({ unitMs: 25, replayCount: 1 })
+    });
     
     const client = new RClient(config);
-    assert(client.config.timeoutMs === 500, 'Timeout should be configured');
+    assert(client.config.requestPolicy.unitMs === 25, 'Policy unit should be configured');
     assert(client.config.tenant.keyId === 12345, 'Tenant ID should be configured');
     
     console.log('✅ Client configuration tests passed');
@@ -197,7 +210,7 @@ function testClientConfiguration(callback) {
 function testRateLimitingIntegration(callback) {
     console.log('Testing rate limiting integration...');
     
-    const client = createClient(getTargetHost(), 12345);
+    const client = createClient(SAMPLE_NONE_KEY_TENANT_1, getTargetHost());
     const resources = [new ResourceRequest('test_api', 1000, 5, 1)];
     
     // Show discovered servers
@@ -234,7 +247,7 @@ function testRateLimitingIntegration(callback) {
 function testConcurrentRequests(callback) {
     console.log('Testing concurrent requests...');
     
-    const client = createClient(getTargetHost(), 12345);
+    const client = createClient(SAMPLE_NONE_KEY_TENANT_1, getTargetHost());
     let results = [];
     let errors = [];
     let completed = 0;
@@ -281,7 +294,7 @@ function testErrorHandling(callback) {
     console.log('Testing error handling...');
     
     // Test with invalid DNS name
-    const client = createClient('invalid.nonexistent.domain', 12345);
+    const client = createClient(SAMPLE_NONE_KEY_TENANT_1, 'invalid.nonexistent.domain');
     const resources = [new ResourceRequest('test', 1000, 10, 1)];
     
     client.checkRateLimit(resources, [], 500, (error, result) => {

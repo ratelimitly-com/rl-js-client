@@ -139,11 +139,12 @@ class ResourceResult {
 }
 
 class RateLimitResult {
-    constructor(success, guardResults, resourceResults, serverId) {
+    constructor(success, guardResults, resourceResults, serverId, steeringFeedback = false) {
         this.success = success;
         this.guardResults = guardResults;
         this.resourceResults = resourceResults;
         this.serverId = serverId;
+        this.steeringFeedback = steeringFeedback;
     }
 }
 
@@ -158,14 +159,92 @@ class TenantConfig {
     }
 }
 
+class HaSchedule {
+    constructor(kind, initialUnits, maxUnits, growth = 0) {
+        if (!['fixed', 'linear', 'exponential'].includes(kind)) {
+            throw new RangeError('schedule kind must be fixed, linear, or exponential');
+        }
+        if (!Number.isSafeInteger(initialUnits) || initialUnits <= 0 ||
+            !Number.isSafeInteger(maxUnits) || maxUnits < initialUnits) {
+            throw new RangeError('schedule must satisfy 1 <= initialUnits <= maxUnits');
+        }
+        if (kind === 'fixed' && (maxUnits !== initialUnits || growth !== 0)) {
+            throw new RangeError('fixed schedule requires maxUnits == initialUnits and growth == 0');
+        }
+        if (kind === 'linear' && (!Number.isSafeInteger(growth) || growth <= 0)) {
+            throw new RangeError('linear growth must be positive');
+        }
+        if (kind === 'exponential' && (!Number.isSafeInteger(growth) || growth < 2)) {
+            throw new RangeError('exponential growth must be at least 2');
+        }
+        this.kind = kind;
+        this.initialUnits = initialUnits;
+        this.maxUnits = maxUnits;
+        this.growth = growth;
+    }
+
+    static fixed(units) { return new HaSchedule('fixed', units, units, 0); }
+    static linear(initialUnits, stepUnits, maxUnits) {
+        return new HaSchedule('linear', initialUnits, maxUnits, stepUnits);
+    }
+    static exponential(initialUnits, factor, maxUnits) {
+        return new HaSchedule('exponential', initialUnits, maxUnits, factor);
+    }
+
+    units(round) {
+        if (!Number.isInteger(round) || round < 0) throw new RangeError('round must be non-negative');
+        if (this.kind === 'fixed') return this.initialUnits;
+        if (this.kind === 'linear') {
+            return Math.min(this.initialUnits + round * this.growth, this.maxUnits);
+        }
+        let value = this.initialUnits;
+        for (let index = 0; index < round && value < this.maxUnits; index++) {
+            value = value > this.maxUnits / this.growth ? this.maxUnits : value * this.growth;
+        }
+        return Math.min(value, this.maxUnits);
+    }
+}
+
+class RequestPolicy {
+    constructor({
+        unitMs = 20,
+        replayCount = 1,
+        replayGap = HaSchedule.fixed(1),
+        finalReceiveUnits = 1,
+        completionDelivery = true,
+    } = {}) {
+        if (!Number.isSafeInteger(unitMs) || unitMs <= 0) throw new RangeError('unitMs must be positive');
+        if (!Number.isInteger(replayCount) || replayCount < 0 || replayCount > 65535) {
+            throw new RangeError('replayCount must be in 0..65535');
+        }
+        if (!(replayGap instanceof HaSchedule)) throw new TypeError('replayGap must be a HaSchedule');
+        if (!Number.isInteger(finalReceiveUnits) || finalReceiveUnits < 0) {
+            throw new RangeError('finalReceiveUnits must be non-negative');
+        }
+        if (typeof completionDelivery !== 'boolean') throw new TypeError('completionDelivery must be boolean');
+        this.unitMs = unitMs;
+        this.replayCount = replayCount;
+        this.replayGap = replayGap;
+        this.finalReceiveUnits = finalReceiveUnits;
+        this.completionDelivery = completionDelivery;
+    }
+
+    horizonMs(dedupTtlMsMax = 0xffffffff) {
+        let totalUnits = this.finalReceiveUnits;
+        for (let round = 0; round <= this.replayCount; round++) totalUnits += this.replayGap.units(round);
+        const horizon = totalUnits * this.unitMs;
+        if (!Number.isSafeInteger(horizon) || horizon <= 0 || horizon > 0xffffffff || horizon > dedupTtlMsMax) {
+            throw new RangeError('request policy horizon exceeds dedup_ttl_ms_max');
+        }
+        return horizon;
+    }
+}
+
 class RClientConfig {
     constructor(tenant, options = {}) {
         this.tenant = tenant;
-        this.timeoutMs = options.timeoutMs || 1000;
-        this.retryAttempts = options.retryAttempts || 2;
-        this.serverStabilityThresholdMs = options.serverStabilityThresholdMs || 30000;
+        this.requestPolicy = options.requestPolicy || new RequestPolicy();
         this.dnsRefreshIntervalS = options.dnsRefreshIntervalS || 300;
-        this.dedupTtlMs = options.dedupTtlMs || 300;
     }
 }
 
@@ -239,6 +318,7 @@ class WireProtocol {
 
         tenantConfig._decodedAuth = {
             encoded: tenantConfig.authSecret,
+            formatVersion: decoded.formatVersion,
             authMethod: decoded.authMethod,
             keyId: decoded.keyId,
             authSecret: secretBuffer,
@@ -295,6 +375,18 @@ class WireProtocol {
         }
     }
 
+    static _validateResourceWindows(tenantConfig, resources) {
+        const quotas = this._tenantQuotas(tenantConfig);
+        const limit = quotas.rate_window_size_ms_max;
+        for (const resource of resources) {
+            if (resource.windowSizeMs > limit) {
+                throw new ProtocolError(
+                    `Resource '${resource.bucketName}' windowSizeMs ${resource.windowSizeMs} exceeds tenant quota rate_window_size_ms_max ${limit}`
+                );
+            }
+        }
+    }
+
     static _filterLatencyReports(tenantConfig, reports) {
         const limit = this._latencyBufferSizeMax(tenantConfig);
         if (limit === null || limit === undefined) {
@@ -327,13 +419,15 @@ class WireProtocol {
     
     static createRateRequest(tenantConfig, resources, guards = [], metricsLabel = null, dedupTtlMs = 300) {
         this._validateLatencyGuards(tenantConfig, guards);
-        let effectiveDedupTtlMs = dedupTtlMs >>> 0;
-        if (typeof tenantConfig.authSecret === 'string' && tenantConfig.authSecret.trim().length > 0) {
-            const decoded = this._decodeAuthKey(tenantConfig);
-            if (decoded.quotas && Number.isInteger(decoded.quotas.dedup_ttl_ms_max)) {
-                effectiveDedupTtlMs = Math.min(effectiveDedupTtlMs, decoded.quotas.dedup_ttl_ms_max >>> 0);
-            }
+        this._validateResourceWindows(tenantConfig, resources);
+        const quotas = this._tenantQuotas(tenantConfig);
+        if (!Number.isInteger(dedupTtlMs) || dedupTtlMs <= 0 ||
+            dedupTtlMs > quotas.dedup_ttl_ms_max) {
+            throw new ProtocolError(
+                `Request policy TTL ${dedupTtlMs} exceeds tenant quota dedup_ttl_ms_max ${quotas.dedup_ttl_ms_max}`
+            );
         }
+        const effectiveDedupTtlMs = dedupTtlMs;
 
         const buffer = Buffer.alloc(1200);
         let pos = 0;
@@ -553,7 +647,7 @@ class WireProtocol {
         return decrypted;
     }
     
-    static parseRateResponse(data, tenantConfig = null, resources = [], guards = []) {
+    static parseRateResponse(data, tenantConfig = null, resources = [], guards = [], expectedRequestId = null) {
         let pos = 0;
         
         // Parse tenant header
@@ -564,9 +658,12 @@ class WireProtocol {
         }
         
         const serverId = Number(data.readBigUInt64LE(pos)); pos += 8;
-        pos += 16; // unique_id
+        const requestId = data.subarray(pos, pos + 16); pos += 16;
+        if (expectedRequestId && !requestId.equals(expectedRequestId)) {
+            throw new ProtocolError('Response request_id does not match the inflight request');
+        }
         pos += 8;  // timestamp
-        pos += 1;  // steering_feedback
+        const steeringFeedback = data.readUInt8(pos) !== 0; pos += 1;
         pos += 1;  // tenant_mgmt_flag
         pos += 2;  // padding
         
@@ -684,7 +781,7 @@ class WireProtocol {
             resourceResults.push(new ResourceResult(bucketName, tokensDeficit, actualRate));
         }
         
-        return { serverId, guardResults, resourceResults };
+        return { serverId, requestId, steeringFeedback, guardResults, resourceResults };
     }
 }
 
@@ -738,7 +835,9 @@ class RClient {
 
     constructor(config) {
         this.config = config;
-        this.serverTracker = new ServerTracker(config.serverStabilityThresholdMs);
+        this.serverTracker = new ServerTracker();
+        this.quotas = WireProtocol._tenantQuotas(config.tenant);
+        this.config.requestPolicy.horizonMs(this.quotas.dedup_ttl_ms_max);
         this.servers = [];
         this.lastDnsRefresh = 0;
         this.resolver = this._buildResolver();
@@ -868,6 +967,113 @@ class RClient {
     _shouldRefreshDns() {
         return (Date.now() - this.lastDnsRefresh) > (this.config.dnsRefreshIntervalS * 1000);
     }
+
+    _sendRateRequest(packet, resources, guards, callback) {
+        const refreshIfNeeded = (done) => {
+            if (this._shouldRefreshDns()) this._refreshServers(done);
+            else done(null);
+        };
+        refreshIfNeeded((refreshError) => {
+            if (refreshError && this.servers.length === 0) {
+                callback(new RateLimitError('No servers available'));
+                return;
+            }
+            const membership = this.servers.slice();
+            if (membership.length === 0) {
+                callback(new RateLimitError('No servers available'));
+                return;
+            }
+            const trusted = new Set(membership.map((server) => server.serverId));
+            const oldestServerId = membership[0].serverId;
+            const expectedRequestId = packet.subarray(12, 28);
+            const policy = this.config.requestPolicy;
+            const socket = dgram.createSocket('udp4');
+            const seenServerIds = new Set();
+            let candidate = null;
+            let round = 0;
+            let finalReceive = false;
+            let timer = null;
+            let terminal = false;
+
+            const better = (left, right) => {
+                if (!right) return true;
+                const leftStart = RClient.serverStartSecondsFromId(left.serverId);
+                const rightStart = RClient.serverStartSecondsFromId(right.serverId);
+                return leftStart < rightStart ||
+                    (leftStart === rightStart && left.serverId < right.serverId);
+            };
+            const close = () => {
+                if (timer) clearTimeout(timer);
+                timer = null;
+                try { socket.close(); } catch (_) { /* already closed */ }
+            };
+            const sendMissing = (bestEffort) => {
+                for (const server of membership) {
+                    if (seenServerIds.has(server.serverId)) continue;
+                    socket.send(packet, server.port, server.ip, (error) => {
+                        if (error && !bestEffort && !terminal) {
+                            terminal = true;
+                            close();
+                            callback(error);
+                        }
+                    });
+                }
+            };
+            const finish = (error, selected) => {
+                if (terminal) return;
+                terminal = true;
+                if (!error && selected && policy.completionDelivery) sendMissing(true);
+                close();
+                callback(error, selected);
+            };
+            const armRound = () => {
+                sendMissing(false);
+                const waitMs = policy.unitMs * policy.replayGap.units(round);
+                timer = setTimeout(() => {
+                    timer = null;
+                    if (candidate) {
+                        finish(null, candidate);
+                    } else if (round < policy.replayCount) {
+                        round += 1;
+                        armRound();
+                    } else if (policy.finalReceiveUnits > 0) {
+                        finalReceive = true;
+                        timer = setTimeout(
+                            () => finish(new TimeoutError('No valid response within the request-policy horizon')),
+                            policy.unitMs * policy.finalReceiveUnits
+                        );
+                    } else {
+                        finish(new TimeoutError('No valid response within the request-policy horizon'));
+                    }
+                }, waitMs);
+            };
+
+            socket.on('message', (response) => {
+                if (terminal) return;
+                try {
+                    const serverId = this._extractResponseServerId(response);
+                    if (serverId === null || !trusted.has(serverId)) return;
+                    const parsed = WireProtocol.parseRateResponse(
+                        response,
+                        this.config.tenant,
+                        resources,
+                        guards,
+                        expectedRequestId
+                    );
+                    seenServerIds.add(parsed.serverId);
+                    this.serverTracker.recordResponse(parsed.serverId, 0);
+                    if (better(parsed, candidate)) candidate = parsed;
+                    if (parsed.serverId === oldestServerId || round > 0 || finalReceive) {
+                        finish(null, candidate);
+                    }
+                } catch (_) {
+                    // Invalid, unauthenticated, unrelated, and malformed datagrams are packet-local noise.
+                }
+            });
+            socket.on('error', (error) => finish(error));
+            armRound();
+        });
+    }
     
     _sendRequest(packet, expectResponse, callback) {
         if (!callback) {
@@ -908,13 +1114,12 @@ class RClient {
                 }
             };
             
-            // Set timeout
-            const timeout = setTimeout(() => {
+            const timeout = expectResponse ? setTimeout(() => {
                 if (!responseReceived) {
                     safeCloseSocket();
                     callback(new TimeoutError('No response received within timeout'));
                 }
-            }, this.config.timeoutMs);
+            }, this.config.requestPolicy.horizonMs(this.quotas.dedup_ttl_ms_max)) : null;
             
             // Handle responses
             socket.on('message', (response, rinfo) => {
@@ -1000,39 +1205,34 @@ class RClient {
         if (!callback) {
             callback = () => {}; // No-op callback
         }
+        resources = resources || [];
+        guards = guards || [];
+        if (resources.length === 0 && guards.length === 0) {
+            callback(null, new RateLimitResult(true, [], [], 0));
+            return;
+        }
+        const dedupTtlMs = this.config.requestPolicy.horizonMs(this.quotas.dedup_ttl_ms_max);
         
         // Create request packet
         const packet = WireProtocol.createRateRequest(
             this.config.tenant,
             resources,
-            guards || [],
+            guards,
             metricsLabel,
-            this.config.dedupTtlMs
+            dedupTtlMs
         );
         
-        // Send request and get response
-        this._sendRequest(packet, true, (error, response) => {
+        this._sendRateRequest(packet, resources, guards, (error, parsed) => {
             if (error) return callback(error);
-            
-            try {
-                // Parse response
-                const { serverId, guardResults, resourceResults } = WireProtocol.parseRateResponse(
-                    response,
-                    this.config.tenant,
-                    resources,
-                    guards || []
-                );
-                
-                // Determine overall success
-                const guardsPassed = guardResults.every(g => g.passed);
-                const resourcesGranted = resourceResults.every(r => r.tokensDeficit === 0);
-                const success = guardsPassed && resourcesGranted;
-                
-                const result = new RateLimitResult(success, guardResults, resourceResults, serverId);
-                callback(null, result);
-            } catch (parseError) {
-                callback(parseError);
-            }
+            const guardsPassed = parsed.guardResults.every((guard) => guard.passed);
+            const resourcesGranted = parsed.resourceResults.every((resource) => resource.tokensDeficit === 0);
+            callback(null, new RateLimitResult(
+                guardsPassed && resourcesGranted,
+                parsed.guardResults,
+                parsed.resourceResults,
+                parsed.serverId,
+                parsed.steeringFeedback
+            ));
         });
     }
     
@@ -1068,9 +1268,20 @@ class RClient {
 }
 
 // Convenience function
-function createClient(dnsName, keyId, authMethod = AuthMethod.NONE, authSecret = null, servers = null, steeringFeedback = false) {
-    const tenantConfig = new TenantConfig(dnsName, keyId, authMethod, authSecret, servers, steeringFeedback);
-    const config = new RClientConfig(tenantConfig);
+function createClient(authKey, dnsName = null, options = {}) {
+    const decoded = decodeApiKey(authKey);
+    const authMethod = decoded.authMethod === 'none'
+        ? AuthMethod.NONE
+        : decoded.authMethod === 'cookie' ? AuthMethod.COOKIE : AuthMethod.AES_GCM;
+    const tenantConfig = new TenantConfig(
+        dnsName || `c-${decoded.keyId.toString()}.p0.ratelimitly.com`,
+        decoded.keyId,
+        authMethod,
+        authKey,
+        null,
+        Boolean(options.steeringFeedback)
+    );
+    const config = new RClientConfig(tenantConfig, options);
     return new RClient(config);
 }
 
@@ -1078,6 +1289,8 @@ module.exports = {
     RClient,
     RClientConfig,
     TenantConfig,
+    HaSchedule,
+    RequestPolicy,
     ResourceRequest,
     LatencyGuard,
     ServiceLatencyBlock,

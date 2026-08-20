@@ -7,13 +7,7 @@ const CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 const CHARSET_REV = Object.fromEntries([...CHARSET].map((c, i) => [c, i]));
 const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
 const ALLOWED_METHODS = new Set(["none", "cookie", "aes"]);
-const QUOTA_KEYS = [
-  "rate_buckets_max",
-  "latency_services_max",
-  "metrics_labels_max",
-  "latency_buffer_size_max",
-  "dedup_ttl_ms_max",
-];
+const FORMAT_VERSION = 1;
 
 function hrpExpand(hrp) {
   const out = [];
@@ -159,12 +153,23 @@ function writeU32LE(bytes, offset, value) {
 }
 
 function decodeQuotas(payload, offset) {
+  const word = readU32LE(payload, offset);
+  const rateExp = word & 0x1f;
+  const latencyExp = (word >>> 5) & 0x1f;
+  const labelsExp = (word >>> 10) & 0x1f;
+  const bufferExp = (word >>> 15) & 0x0f;
+  const dedupUnits = (word >>> 19) & 0xff;
+  const windowExp = (word >>> 27) & 0x1f;
+  if (rateExp > 24 || latencyExp > 24 || dedupUnits < 1 || dedupUnits > 200) {
+    throw new Error("invalid packed quota word");
+  }
   return {
-    rate_buckets_max: readU32LE(payload, offset),
-    latency_services_max: readU32LE(payload, offset + 4),
-    metrics_labels_max: readU32LE(payload, offset + 8),
-    latency_buffer_size_max: readU32LE(payload, offset + 12),
-    dedup_ttl_ms_max: readU32LE(payload, offset + 16),
+    rate_buckets_max: 2 ** rateExp,
+    latency_services_max: 2 ** latencyExp,
+    metrics_labels_max: 2 ** labelsExp,
+    latency_buffer_size_max: 2 ** bufferExp,
+    dedup_ttl_ms_max: dedupUnits * 10,
+    rate_window_size_ms_max: windowExp === 31 ? 0xffffffff : 2 ** windowExp,
   };
 }
 
@@ -177,17 +182,33 @@ function normalizeSecret(authSecret) {
 
 function encodeQuotas(quotas) {
   if (!quotas || typeof quotas !== "object") {
-    throw new Error("quotas are required for tenant Bech32 keys");
+    throw new Error("quotas are required for API keys");
   }
-  const out = new Uint8Array(20);
-  for (let i = 0; i < QUOTA_KEYS.length; i++) {
-    const key = QUOTA_KEYS[i];
+
+  function exponent(key, maxExp) {
     const value = quotas[key];
-    if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
-      throw new Error(`${key} must be an integer in u32 range`);
+    if (!Number.isInteger(value) || value <= 0 || value > 0xffffffff ||
+        Math.log2(value) % 1 !== 0) {
+      throw new Error(`${key} must be a power of two`);
     }
-    writeU32LE(out, i * 4, value >>> 0);
+    const result = Math.log2(value);
+    if (result > maxExp) throw new Error(`${key} is too large`);
+    return result;
   }
+  const rateExp = exponent("rate_buckets_max", 24);
+  const latencyExp = exponent("latency_services_max", 24);
+  const labelsExp = exponent("metrics_labels_max", 31);
+  const bufferExp = exponent("latency_buffer_size_max", 15);
+  const dedup = quotas.dedup_ttl_ms_max;
+  if (!Number.isInteger(dedup) || dedup < 10 || dedup > 2000 || dedup % 10 !== 0) {
+    throw new Error("dedup_ttl_ms_max must be a multiple of 10 in 10..2000");
+  }
+  const windowExp = quotas.rate_window_size_ms_max === 0xffffffff
+    ? 31 : exponent("rate_window_size_ms_max", 30);
+  const word = (rateExp | (latencyExp << 5) | (labelsExp << 10) |
+    (bufferExp << 15) | ((dedup / 10) << 19) | (windowExp << 27)) >>> 0;
+  const out = new Uint8Array(4);
+  writeU32LE(out, 0, word);
   return out;
 }
 
@@ -201,26 +222,30 @@ function decodeApiKey(encoded) {
   }
 
   if (authMethod === "none") {
-    if (payload.length !== 28) throw new Error(`invalid rl-none payload length: expected 28, got ${payload.length}`);
+    if (payload.length !== 13) throw new Error(`invalid rl-none payload length: expected 13, got ${payload.length}`);
+    if (payload[0] !== FORMAT_VERSION) throw new Error(`unsupported format version: ${payload[0]}`);
     return {
       hrp,
+      formatVersion: FORMAT_VERSION,
       authMethod,
-      keyId: readU64LE(payload, 0),
+      keyId: readU64LE(payload, 1),
       authSecret: new Uint8Array(0),
-      quotas: decodeQuotas(payload, 8),
+      quotas: decodeQuotas(payload, 9),
     };
   }
 
-  if (payload.length !== 60) {
-    throw new Error(`invalid rl-${authMethod} payload length: expected 60, got ${payload.length}`);
+  if (payload.length !== 45) {
+    throw new Error(`invalid rl-${authMethod} payload length: expected 45, got ${payload.length}`);
   }
+  if (payload[0] !== FORMAT_VERSION) throw new Error(`unsupported format version: ${payload[0]}`);
 
   return {
     hrp,
+    formatVersion: FORMAT_VERSION,
     authMethod,
-    keyId: readU64LE(payload, 0),
-    authSecret: payload.slice(8, 40),
-    quotas: decodeQuotas(payload, 40),
+    keyId: readU64LE(payload, 1),
+    authSecret: payload.slice(9, 41),
+    quotas: decodeQuotas(payload, 41),
   };
 }
 
@@ -241,18 +266,19 @@ function encodeApiKey(authMethod, keyId, authSecret = new Uint8Array(0), quotas)
 
   if (authMethod === "none") {
     if (secret.length !== 0) throw new Error("rl-none payload must not contain authSecret");
-    payload = new Uint8Array(28);
-    writeU64LE(payload, 0, keyId);
-    payload.set(quotaBytes, 8);
+    payload = new Uint8Array(13);
+    payload.set(quotaBytes, 9);
   } else {
     if (secret.length !== 32) {
       throw new Error(`rl-${authMethod} payload must contain a 32-byte secret`);
     }
-    payload = new Uint8Array(60);
-    writeU64LE(payload, 0, keyId);
-    payload.set(secret, 8);
-    payload.set(quotaBytes, 40);
+    payload = new Uint8Array(45);
+    payload.set(secret, 9);
+    payload.set(quotaBytes, 41);
   }
+
+  payload[0] = FORMAT_VERSION;
+  writeU64LE(payload, 1, keyId);
 
   return bech32Encode(`rl-${authMethod}`, payload);
 }
@@ -268,10 +294,11 @@ if (require.main === module) {
     rate_buckets_max: 65536,
     latency_services_max: 1024,
     metrics_labels_max: 4096,
-    latency_buffer_size_max: 64,
+    latency_buffer_size_max: 32,
+    dedup_ttl_ms_max: 300,
+    rate_window_size_ms_max: 0xffffffff,
   };
-  const sample =
-    "rl-aes1qvqqqqqqqqqqqqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqqqqzqqqqsqqqqqsqqqyqqqqqquzv6tw";
+  const sample = encodeApiKey("aes", 123n, new Uint8Array(32).fill(1), sampleQuotas);
   const decoded = decodeApiKey(sample);
   const reencoded = encodeApiKey(decoded.authMethod, decoded.keyId, decoded.authSecret, decoded.quotas || sampleQuotas);
   console.log({

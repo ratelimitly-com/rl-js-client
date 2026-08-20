@@ -643,7 +643,6 @@ class WireProtocol {
         let decrypted = decipher.update(encryptedData);
         decipher.final();
         
-        console.log(`Decrypted PDU: ${decrypted.toString('hex')}`);
         return decrypted;
     }
     
@@ -906,9 +905,7 @@ class RClient {
         }
 
         const srvName = `_ratelimitly._udp.${this.config.tenant.dnsName}`;
-        console.log(`Trying SRV lookup: ${srvName}`);
         this.resolver.resolveSrv(srvName, (srvError, srvRecords) => {
-            console.log(`SRV lookup result - Error: ${srvError}, Records: ${JSON.stringify(srvRecords)}`);
             if (!srvError && srvRecords && srvRecords.length > 0) {
                 const servers = [];
                 const candidates = srvRecords
@@ -948,7 +945,6 @@ class RClient {
                             });
                             this.servers = servers;
                             this.lastDnsRefresh = Date.now();
-                            console.log(`Refreshed servers via SRV: ${servers.map(s => `${s.ip}:${s.port} (server_id=${s.serverId})`).join(', ')}`);
                             callback(null);
                         }
                     });
@@ -958,7 +954,6 @@ class RClient {
 
             if (srvError && !process.env.RCLIENT_DNS_SERVER && !this.dnsResolverHintShown) {
                 this.dnsResolverHintShown = true;
-                console.log('Notice: set `RCLIENT_DNS_SERVER=127.0.0.1[:port]` to use a local DNS resolver.');
             }
             callback(new RateLimitError(`SRV lookup failed for ${srvName}: ${srvError ? srvError.message : 'no records'}`));
         });

@@ -1,0 +1,147 @@
+name: dependency drift
+
+on:
+  schedule:
+    - cron: '32 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-drift
+  cancel-in-progress: true
+
+# This client has no npm dependencies and no lockfile, so classic dependency
+# drift does not apply. The two things that can drift underneath it are the Node
+# runtime and the RateLimitly wire protocol as defined by the C reference
+# client, so those are what this workflow chases every Monday.
+
+jobs:
+  latest-node:
+    name: node ${{ matrix.line }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        line:
+          - current
+          - nightly
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # actions/setup-node resolves 'current' itself, but it has no bare
+      # 'nightly' alias -- a nightly spec must name a major, e.g. '27-nightly'.
+      # Resolve the newest nightly major from the download index so this file
+      # does not have to be edited every six months.
+      - name: Resolve Node version specifier
+        id: spec
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.line }}" = "nightly" ]; then
+            major="$(curl -fsSL --retry 3 https://nodejs.org/download/nightly/index.json \
+              | jq -r '[.[].version | ltrimstr("v") | split(".")[0] | tonumber] | max')"
+            echo "spec=${major}-nightly" >> "$GITHUB_OUTPUT"
+          else
+            echo "spec=current" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ steps.spec.outputs.spec }}
+
+      - name: Record resolved Node version
+        run: |
+          echo "Node ${{ matrix.line }} (${{ steps.spec.outputs.spec }}) resolved to $(node --version)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run test suite
+        run: npm test
+
+  c-client-main:
+    name: rl-c-client/main
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      C_REFERENCE_DIR: _reference/rl-c-client
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out rl-c-client main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ratelimitly-com/rl-c-client
+          ref: main
+          path: _reference/rl-c-client
+          persist-credentials: false
+
+      - name: Record resolved rl-c-client commit
+        run: |
+          echo "rl-c-client/main commit: $(git -C "$C_REFERENCE_DIR" rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libssl-dev
+
+      # Building the reference is the cheap half of the drift signal: if the C
+      # client stops building, the protocol source of truth has moved.
+      - name: Build C reference library
+        run: make -C "$C_REFERENCE_DIR" librclient.so
+
+      # The expensive half does not exist yet. There is no byte-for-byte
+      # differential harness on the JavaScript side, so all this job can do is
+      # re-run the tests that hard-code wire expectations -- the API-key v1
+      # vectors in test_api_key_v1.js and the canonical bucket/tracker ID
+      # vectors in test_client.js -- and report how far those overlap with the
+      # C reference's own fixtures.
+      - name: Run wire-format tests
+        run: npm test
+
+      - name: Summarise API-key vector overlap with the C reference
+        run: |
+          node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
+          const fs = require('fs');
+
+          const fixture = `${process.env.C_REFERENCE_DIR}/tests/fixtures/api_key_v1_test_vectors.h`;
+          console.log('');
+          console.log('### API-key v1 vector overlap (informational)');
+          console.log('');
+
+          if (!fs.existsSync(fixture)) {
+            console.log(`The C reference no longer ships \`${fixture}\`; overlap not computed.`);
+            process.exit(0);
+          }
+
+          const pattern = /"(rl-(?:none|cookie|aes)1[0-9a-z]+)"/g;
+          const vectorsIn = (file) =>
+            new Set([...fs.readFileSync(file, 'utf8').matchAll(pattern)].map((match) => match[1]));
+
+          const here = vectorsIn('test_api_key_v1.js');
+          const upstream = vectorsIn(fixture);
+          const shared = [...here].filter((vector) => upstream.has(vector)).length;
+
+          console.log(`| | count |`);
+          console.log(`| --- | --- |`);
+          console.log(`| asserted by \`test_api_key_v1.js\` | ${here.size} |`);
+          console.log(`| in the C reference fixture | ${upstream.size} |`);
+          console.log(`| shared | ${shared} |`);
+          console.log(`| asserted here, absent upstream | ${here.size - shared} |`);
+          console.log(`| upstream, not asserted here | ${upstream.size - shared} |`);
+          console.log('');
+          console.log('Coverage signal only -- no assertion is made on these numbers.');
+          NODE

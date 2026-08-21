@@ -1,0 +1,142 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Lowest Node major the `test` matrix below actually proves. The hygiene job
+  # asserts that package.json `engines.node` agrees with this, so the two cannot
+  # drift apart silently.
+  NODE_MATRIX_FLOOR: '20'
+
+jobs:
+  hygiene:
+    name: hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Parse every JavaScript file
+        run: git ls-files -z '*.js' '*.mjs' | xargs -0 -r -n1 -t node --check
+
+      # The repository has no dependencies and no lockfile, so ESLint is fetched
+      # on demand at a pinned version rather than installed as a devDependency.
+      # eslint.config.mjs explains the rule set.
+      - name: Lint
+        run: npx --yes eslint@10.8.1 .
+
+      - name: Validate package manifest
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+
+          const floor = Number(process.env.NODE_MATRIX_FLOOR);
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const problems = [];
+
+          for (const field of ['name', 'version', 'description', 'main', 'license', 'scripts']) {
+            if (!pkg[field]) {
+              problems.push(`missing required field: ${field}`);
+            }
+          }
+
+          if (pkg.main && !fs.existsSync(pkg.main)) {
+            problems.push(`main entry point does not exist: ${pkg.main}`);
+          }
+
+          for (const [name, command] of Object.entries(pkg.scripts || {})) {
+            for (const file of command.match(/[\w./-]+\.js\b/g) || []) {
+              if (!fs.existsSync(file)) {
+                problems.push(`scripts.${name} runs a file that does not exist: ${file}`);
+              }
+            }
+          }
+
+          const engines = (pkg.engines || {}).node;
+          const parsed = /^>=(\d+)\.(\d+)\.(\d+)$/.exec(engines || '');
+          if (!parsed) {
+            problems.push(`engines.node must be a simple floor of the form ">=X.Y.Z", got ${JSON.stringify(engines)}`);
+          } else {
+            if (Number(parsed[1]) !== floor) {
+              problems.push(`engines.node declares a floor of Node ${parsed[1]} but the CI matrix floor is Node ${floor}`);
+            }
+            if (Number(process.versions.node.split('.')[0]) < Number(parsed[1])) {
+              problems.push(`this job runs ${process.version}, which is below the declared floor ${engines}`);
+            }
+          }
+
+          const urls = {
+            'repository.url': (pkg.repository || {}).url,
+            'bugs.url': (pkg.bugs || {}).url,
+            homepage: pkg.homepage
+          };
+          for (const [field, value] of Object.entries(urls)) {
+            if (!value) {
+              problems.push(`missing ${field}`);
+            } else if (!value.includes('ratelimitly-com/rl-js-client')) {
+              problems.push(`${field} does not point at ratelimitly-com/rl-js-client: ${value}`);
+            }
+          }
+
+          for (const problem of problems) {
+            console.error(`package.json: ${problem}`);
+          }
+          if (problems.length > 0) {
+            process.exit(1);
+          }
+          console.log(`package.json is coherent; engines.node = ${engines}`);
+          NODE
+
+  test:
+    name: node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version:
+          - '20'
+          - '22'
+          - '24'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No `cache: npm` -- the repository has no dependencies and no lockfile
+      # for setup-node's cache to key on.
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      # `npm test` runs test_api_key_v1.js, test_policy.js, test_ha.js and
+      # test_client.js. The sub-tests inside test_client.js that need a live
+      # RateLimitly server print "Integration test skipped (no server)" and pass,
+      # so the integration path is NOT proven by this job -- only the wire
+      # encoding, canonical IDs, HA policy and configuration paths are.
+      - name: Run test suite
+        run: npm test

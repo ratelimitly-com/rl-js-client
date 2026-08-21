@@ -18,14 +18,14 @@
   "author": "RateLimitly Team",
   "license": "MIT",
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=20.0.0"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-org/ratelimitly"
+    "url": "https://github.com/ratelimitly-com/rl-js-client.git"
   },
   "bugs": {
-    "url": "https://github.com/your-org/ratelimitly/issues"
+    "url": "https://github.com/ratelimitly-com/rl-js-client/issues"
   },
-  "homepage": "https://github.com/your-org/ratelimitly#readme"
+  "homepage": "https://github.com/ratelimitly-com/rl-js-client#readme"
 }

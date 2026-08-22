@@ -137,6 +137,50 @@ jobs:
       # test_client.js. The sub-tests inside test_client.js that need a live
       # RateLimitly server print "Integration test skipped (no server)" and pass,
       # so the integration path is NOT proven by this job -- only the wire
-      # encoding, canonical IDs, HA policy and configuration paths are.
+      # encoding, canonical IDs, HA policy and configuration paths are. The
+      # `production-smoke` job below is what proves the live protocol exchange.
       - name: Run test suite
         run: npm test
+
+  # Live protocol proof against production, modelled on rl-c-client's
+  # `production-p0-smoke`. It runs only on main: secrets are unavailable to fork
+  # pull requests, and hitting production on every push to every branch burns
+  # real tenant quota. Manual re-runs are pinned to the maintainer for the same
+  # reason. test_production_smoke.js is deliberately not part of `npm test`.
+  production-smoke:
+    name: Production protocol smoke
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' &&
+        github.actor == 'edescourtis'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Its own group, never cancelled: a half-executed live run leaves rate
+    # buckets and latency trackers in production in an unknown state.
+    concurrency:
+      group: rl-js-client-production-smoke
+      cancel-in-progress: false
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Run the live proof on the oldest Node the package claims to support.
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_MATRIX_FLOOR }}
+
+      # The key is a step-level env var: it is never exposed to other steps,
+      # never echoed, and never written to a file. The namespace scopes every
+      # bucket and latency tracker this run creates, so concurrent or repeated
+      # runs cannot collide. The probe fails loudly when either is missing --
+      # a live test that quietly no-ops is worse than no test.
+      - name: Prove key-only rate and latency behavior
+        env:
+          RATELIMITLY_AUTH_KEY: ${{ secrets.RATELIMITLY_AUTH_KEY }}
+          RATELIMITLY_P0_TEST_NAMESPACE: ci-${{ github.run_id }}-${{ github.run_attempt }}
+        run: node test_production_smoke.js

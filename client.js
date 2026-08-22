@@ -1002,14 +1002,33 @@ class RClient {
                 timer = null;
                 try { socket.close(); } catch (_) { /* already closed */ }
             };
+            // One unreachable endpoint must not discard the endpoints behind it:
+            // a dual-stack SRV target expands to one endpoint per address sharing
+            // a server id, so an IPv6 address on an IPv4-only host would otherwise
+            // fail every request. Fail the request only if nothing got out at all.
             const sendMissing = (bestEffort) => {
-                for (const server of membership) {
-                    if (seenServerIds.has(server.serverId)) continue;
+                const targets = membership.filter((server) => !seenServerIds.has(server.serverId));
+                if (targets.length === 0) return;
+                let pending = targets.length;
+                let delivered = 0;
+                let lastError = null;
+                for (const server of targets) {
                     socket.send(packet, server.port, server.ip, (error) => {
-                        if (error && !bestEffort && !terminal) {
+                        if (error) lastError = error; else delivered += 1;
+                        pending -= 1;
+                        if (pending > 0 || bestEffort || terminal) return;
+                        if (delivered === 0) {
                             terminal = true;
                             close();
-                            callback(error);
+                            callback(lastError);
+                        } else if (delivered < targets.length) {
+                            // Partial delivery is otherwise invisible: the request
+                            // still succeeds, but the oldest replica's answer wins,
+                            // so losing it quietly downgrades the result.
+                            console.warn(
+                                `Rate request reached ${delivered} of ${targets.length} endpoints ` +
+                                `(${targets.length - delivered} unreachable): ${lastError.message}`
+                            );
                         }
                     });
                 }

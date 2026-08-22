@@ -217,7 +217,7 @@ function testRateLimitingIntegration(callback) {
     setTimeout(() => {
         const stats = client.getServerStats();
         if (stats.servers && stats.servers.length > 0) {
-            console.log(`Discovered servers: ${stats.servers.map(s => `${s.ip || s}:${s.port || '8080'}`).join(', ')}`);
+            console.log(`Discovered servers: ${stats.servers.map(s => `${s.ip || s}:${s.port || '29292'}`).join(', ')}`);
         }
     }, 100);
     
@@ -257,7 +257,7 @@ function testConcurrentRequests(callback) {
     setTimeout(() => {
         const stats = client.getServerStats();
         if (stats.servers && stats.servers.length > 0) {
-            console.log(`Using servers: ${stats.servers.map(s => `${s.ip || s}:${s.port || '8080'}`).join(', ')}`);
+            console.log(`Using servers: ${stats.servers.map(s => `${s.ip || s}:${s.port || '29292'}`).join(', ')}`);
         }
     }, 100);
     
@@ -330,7 +330,7 @@ function runAllTests() {
         if (currentTest >= tests.length) {
             console.log('\n🎉 All tests completed!');
             console.log('\nTo test with a live server:');
-            console.log('1. Start a compatible server on UDP port 8080');
+            console.log('1. Start a compatible server on UDP port 29292');
             console.log('2. Run integration tests: node test_client.js');
             return;
         }

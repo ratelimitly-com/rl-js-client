@@ -1,6 +1,6 @@
 {
   "name": "ratelimitly-client",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "RateLimitly JavaScript R-Client for centralized rate limiting and load shedding",
   "main": "client.js",
   "scripts": {

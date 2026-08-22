@@ -104,6 +104,9 @@ function checkRateLimit(client, resource) {
   const decision = await checkRateLimit(survives, resource);
   assert.strictEqual(decision.serverId, reachableId);
   assert.strictEqual(decision.success, true);
+  // Partial delivery is recorded as a counter, never logged per request.
+  const tracked = survives.serverTracker.servers.get(unreachableId);
+  assert(tracked && tracked.sendFailures >= 1, "expected the failed endpoint to be counted");
   responder.close();
   console.log("unreachable endpoint does not abort the request: passed");
 

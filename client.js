@@ -811,6 +811,26 @@ class ServerTracker {
         server.stable = ageMs >= this.stabilityThresholdMs;
     }
     
+    // Counts endpoints a request could not be sent to. Partial delivery is
+    // otherwise invisible: the request still succeeds through the endpoints
+    // that worked, while the oldest replica's answer wins, so losing the
+    // oldest replica quietly downgrades the result. This is a counter and not
+    // a log line because it runs per request on the send path.
+    recordSendFailure(serverId) {
+        if (!this.servers.has(serverId)) {
+            const now = Date.now();
+            this.servers.set(serverId, {
+                firstSeen: now,
+                lastSeen: now,
+                responseCount: 0,
+                stable: false,
+                sendFailures: 0
+            });
+        }
+        const server = this.servers.get(serverId);
+        server.sendFailures = (server.sendFailures || 0) + 1;
+    }
+
     isServerStable(serverId) {
         const server = this.servers.get(serverId);
         return server ? server.stable : false;
@@ -1014,21 +1034,22 @@ class RClient {
                 let lastError = null;
                 for (const server of targets) {
                     socket.send(packet, server.port, server.ip, (error) => {
-                        if (error) lastError = error; else delivered += 1;
+                        if (error) {
+                            lastError = error;
+                            // A counter, not a log line: this runs per request on
+                            // the send path, so a persistently unreachable endpoint
+                            // would otherwise emit synchronous stderr writes for
+                            // every request for as long as it stays down.
+                            if (!bestEffort) this.serverTracker.recordSendFailure(server.serverId);
+                        } else {
+                            delivered += 1;
+                        }
                         pending -= 1;
                         if (pending > 0 || bestEffort || terminal) return;
                         if (delivered === 0) {
                             terminal = true;
                             close();
                             callback(lastError);
-                        } else if (delivered < targets.length) {
-                            // Partial delivery is otherwise invisible: the request
-                            // still succeeds, but the oldest replica's answer wins,
-                            // so losing it quietly downgrades the result.
-                            console.warn(
-                                `Rate request reached ${delivered} of ${targets.length} endpoints ` +
-                                `(${targets.length - delivered} unreachable): ${lastError.message}`
-                            );
                         }
                     });
                 }

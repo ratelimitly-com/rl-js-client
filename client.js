@@ -154,7 +154,7 @@ class TenantConfig {
         this.keyId = keyId;
         this.authMethod = authMethod;
         this.authSecret = authSecret; // Bech32 key for cookie/aes auth methods
-        this.servers = servers; // [{ip: '127.0.0.1', port: 8080}, ...]
+        this.servers = servers; // [{ip: '127.0.0.1', port: 29292}, ...]
         this.steeringFeedback = steeringFeedback; // boolean: false=change port, true=keep port
     }
 }

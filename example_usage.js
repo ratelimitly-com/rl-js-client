@@ -400,7 +400,7 @@ async function main() {
     console.log('='.repeat(50));
     
     console.log('Note: These examples require a running RateLimitly server.');
-    console.log('Start any compatible server on UDP port 8080 before running examples.');
+    console.log('Start any compatible server on UDP port 29292 before running examples.');
     console.log(`Using target host: ${DEFAULT_TARGET_HOST}`);
     console.log('='.repeat(50));
     

@@ -65,7 +65,7 @@ function test() {
 // Add localhost entry instructions
 console.log('📝 Setup instructions:');
 console.log('   1. Add to /etc/hosts: echo "127.0.0.1 ratelimitly.local" | sudo tee -a /etc/hosts');
-console.log('   2. Start a compatible server bound to UDP port 8080');
+console.log('   2. Start a compatible server bound to UDP port 29292');
 console.log('   3. Run this test: node test_domain.js');
 console.log('');
 

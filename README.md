@@ -427,7 +427,7 @@ node test_client.js
 ### Integration Tests
 
 ```bash
-# Start any compatible Ratelimitly server on UDP port 8080
+# Start any compatible Ratelimitly server on UDP port 29292
 # Ensure your SRV hostname resolves, for example:
 #   export RCLIENT_TARGET_HOST=ratelimitly.local
 #   export RCLIENT_DNS_SERVER=127.0.0.1

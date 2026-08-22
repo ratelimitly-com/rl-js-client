@@ -1,0 +1,548 @@
+name: release
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      # package.json has no `files` field and there is no `.npmignore`, so npm
+      # falls back to `.gitignore` to decide what ships. It is a release input.
+      - '.gitignore'
+      - 'LICENSE'
+      - 'README.md'
+      - 'package.json'
+      - '**.js'
+      - '**.mjs'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Same guard ci.yml uses: the lowest Node major the CI matrix actually proves.
+  # A release must not ship a package whose engines.node claims anything else.
+  NODE_MATRIX_FLOOR: '20'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    name: Validate release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      commit: ${{ steps.metadata.outputs.commit }}
+      epoch: ${{ steps.metadata.outputs.epoch }}
+      publish: ${{ steps.metadata.outputs.publish }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      tarball: ${{ steps.metadata.outputs.tarball }}
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve immutable build metadata
+        id: metadata
+        shell: bash
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # package.json is the canonical version. Bumping it on main is what
+          # cuts a release; nobody pushes a tag by hand.
+          canonical_version="$(node -p 'require("./package.json").version')"
+          if [[ ! "$canonical_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "package.json version must be numeric MAJOR.MINOR.PATCH, got '$canonical_version'" >&2
+            exit 1
+          fi
+          package_name="$(node -p 'require("./package.json").name')"
+          if [[ -z "$package_name" || "$package_name" == undefined ]]; then
+            echo "package.json has no name" >&2
+            exit 1
+          fi
+          # npm names the tarball after the manifest: a scoped @scope/name
+          # becomes scope-name. Derive it rather than hard-coding it.
+          tarball="$(printf '%s' "$package_name" | sed 's|^@||; s|/|-|g')-${canonical_version}.tgz"
+          commit="$(git rev-parse HEAD)"
+          epoch="$(git show -s --format=%ct HEAD)"
+          release_tag="v${canonical_version}"
+          publish=false
+
+          # The checkout runs with persist-credentials: false and this is a
+          # private repository, so unauthenticated git cannot reach the remote.
+          # Resolve tags through the API with github.token instead.
+          resolve_tag_commit() {
+            local ref_json object_sha object_type
+            ref_json="$(gh api "repos/${GH_REPO}/git/ref/tags/${release_tag}")"
+            object_sha="$(jq -r .object.sha <<<"$ref_json")"
+            object_type="$(jq -r .object.type <<<"$ref_json")"
+            # An annotated tag points at a tag object, not the commit.
+            if [[ "$object_type" == tag ]]; then
+              object_sha="$(gh api "repos/${GH_REPO}/git/tags/${object_sha}" --jq .object.sha)"
+            fi
+            if [[ ! "$object_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "could not resolve $release_tag to a commit, got '$object_sha'" >&2
+              return 1
+            fi
+            printf '%s' "$object_sha"
+          }
+
+          tag_exists() {
+            gh api "repos/${GH_REPO}/git/ref/tags/${release_tag}" >/dev/null 2>&1
+          }
+
+          verify_tag_commit() {
+            local tag_commit
+            tag_commit="$(resolve_tag_commit)"
+            if [[ "$tag_commit" != "$commit" ]]; then
+              echo "$release_tag points to $tag_commit, expected $commit" >&2
+              exit 1
+            fi
+          }
+
+          case "$GITHUB_EVENT_NAME" in
+            push)
+              [[ "$GITHUB_REF" == refs/heads/main ]]
+              if gh release view "$release_tag" >/dev/null 2>&1; then
+                state="$(
+                  gh release view "$release_tag" \
+                    --json isDraft \
+                    --jq .isDraft
+                )"
+                if [[ "$state" == true ]]; then
+                  # An interrupted run left a draft behind; finish it. A draft
+                  # has no tag yet -- GitHub creates it on publish -- so the
+                  # commit to check is the draft's target commitish.
+                  target="$(
+                    gh release view "$release_tag" \
+                      --json targetCommitish \
+                      --jq .targetCommitish
+                  )"
+                  if [[ "$target" != "$commit" ]]; then
+                    echo "draft $release_tag targets $target, expected $commit" >&2
+                    exit 1
+                  fi
+                  if tag_exists; then
+                    verify_tag_commit
+                  fi
+                  publish=true
+                else
+                  echo "$release_tag already published; bump the package.json version for the next release"
+                fi
+              elif tag_exists; then
+                verify_tag_commit
+                publish=true
+              else
+                publish=true
+              fi
+              ;;
+            workflow_dispatch|pull_request)
+              ;;
+            *)
+              echo "unsupported release event: $GITHUB_EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+          version="$canonical_version"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$epoch" =~ ^[0-9]+$ ]]
+          {
+            echo "commit=$commit"
+            echo "epoch=$epoch"
+            echo "publish=$publish"
+            echo "tag=$release_tag"
+            echo "tarball=$tarball"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+  contracts:
+    name: Focused release contracts
+    needs: metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No `cache: npm` -- the repository has no dependencies and no lockfile
+      # for setup-node's cache to key on.
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Run test suite
+        run: npm test
+
+      - name: Check release invariants
+        env:
+          EXPECTED_TARBALL: ${{ needs.metadata.outputs.tarball }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+
+          const floor = Number(process.env.NODE_MATRIX_FLOOR);
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const problems = [];
+
+          if (pkg.version !== process.env.VERSION) {
+            problems.push(`version is ${pkg.version} but metadata resolved ${process.env.VERSION}`);
+          }
+          if (process.env.TAG !== `v${pkg.version}`) {
+            problems.push(`tag ${process.env.TAG} does not match version ${pkg.version}`);
+          }
+
+          const slug = pkg.name.replace(/^@/, '').replace(/\//g, '-');
+          const tarball = `${slug}-${pkg.version}.tgz`;
+          if (tarball !== process.env.EXPECTED_TARBALL) {
+            problems.push(`npm will pack ${tarball} but the release expects ${process.env.EXPECTED_TARBALL}`);
+          }
+
+          if (!pkg.main || !fs.existsSync(pkg.main)) {
+            problems.push(`main entry point does not exist: ${pkg.main}`);
+          }
+
+          const engines = (pkg.engines || {}).node;
+          const parsed = /^>=(\d+)\.(\d+)\.(\d+)$/.exec(engines || '');
+          if (!parsed) {
+            problems.push(`engines.node must be a simple floor of the form ">=X.Y.Z", got ${JSON.stringify(engines)}`);
+          } else if (Number(parsed[1]) !== floor) {
+            problems.push(`engines.node declares a floor of Node ${parsed[1]} but the CI matrix floor is Node ${floor}`);
+          }
+
+          // This package has no build step. A lifecycle script firing during
+          // `npm pack` would put files in the tarball that no CI job ever saw,
+          // so the release refuses to run with one present.
+          for (const hook of ['prepare', 'prepack', 'prepublish', 'prepublishOnly']) {
+            if ((pkg.scripts || {})[hook]) {
+              problems.push(`scripts.${hook} would run during npm pack; this package has no build step`);
+            }
+          }
+
+          // No dependencies and no lockfile is the deliberate posture of this
+          // client (see ci.yml). A dependency would ship an unpinned transitive
+          // tree to consumers, so it has to be a conscious change, not a drift.
+          for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies']) {
+            const names = Object.keys(pkg[field] || {});
+            if (names.length > 0) {
+              problems.push(`${field} is meant to be empty, found: ${names.join(', ')}`);
+            }
+          }
+
+          for (const problem of problems) {
+            console.error(`release contract: ${problem}`);
+          }
+          if (problems.length > 0) {
+            process.exit(1);
+          }
+          console.log(`${pkg.name}@${pkg.version} satisfies the release contracts; will pack ${tarball}`);
+          NODE
+
+  package:
+    name: npm tarball
+    needs: metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The tarball bytes come out of the npm and zlib bundled with Node, so the
+      # packing runtime is pinned to a single version rather than matrixed.
+      # '22' matches ci.yml's hygiene job.
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Build the package tarball twice and prove it is byte-identical
+        shell: bash
+        env:
+          SOURCE_DATE_EPOCH: ${{ needs.metadata.outputs.epoch }}
+          TARBALL: ${{ needs.metadata.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pack-a" "$RUNNER_TEMP/pack-b" "$RUNNER_TEMP/release-npm"
+
+          npm pack --pack-destination "$RUNNER_TEMP/pack-a"
+
+          # npm normalises every entry to a fixed 1985 mtime and writes no gzip
+          # timestamp, so mtimes on disk must not move a single byte. Skew them
+          # all and pack again to prove that, rather than asserting it.
+          # SOURCE_DATE_EPOCH is exported for consistency with the other release
+          # workflows; npm does not read it, the determinism is npm's own.
+          find . -path ./.git -prune -o -type f -print0 \
+            | xargs -0 touch -d "@$SOURCE_DATE_EPOCH"
+          npm pack --pack-destination "$RUNNER_TEMP/pack-b"
+
+          first="$(sha256sum "$RUNNER_TEMP/pack-a/$TARBALL" | cut -d' ' -f1)"
+          second="$(sha256sum "$RUNNER_TEMP/pack-b/$TARBALL" | cut -d' ' -f1)"
+          if [[ "$first" != "$second" ]]; then
+            echo "npm pack is not reproducible: $first != $second" >&2
+            exit 1
+          fi
+          cp "$RUNNER_TEMP/pack-a/$TARBALL" "$RUNNER_TEMP/release-npm/$TARBALL"
+
+          {
+            echo "### Packed tarball"
+            echo
+            echo "\`$TARBALL\` -- sha256 \`$first\` (identical across two packs)"
+            echo
+            echo '| file | bytes |'
+            echo '| --- | --- |'
+            tar -tzvf "$RUNNER_TEMP/release-npm/$TARBALL" \
+              | awk '{ printf "| `%s` | %s |\n", $NF, $3 }'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the tarball installs and loads in a clean project
+        shell: bash
+        env:
+          TARBALL: ${{ needs.metadata.outputs.tarball }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          PACKAGE_NAME="$(node -p 'require("./package.json").name')"
+          PACKAGE_MAIN="$(node -p 'require("./package.json").main')"
+          export PACKAGE_NAME PACKAGE_MAIN
+
+          # The tarball must carry the manifest and the entry point it names.
+          tar -tzf "$RUNNER_TEMP/release-npm/$TARBALL" | sort > "$RUNNER_TEMP/tarball-files"
+          for required in "package/package.json" "package/$PACKAGE_MAIN"; do
+            if ! grep -Fxq "$required" "$RUNNER_TEMP/tarball-files"; then
+              echo "$TARBALL does not contain $required" >&2
+              exit 1
+            fi
+          done
+
+          consumer="$RUNNER_TEMP/consumer"
+          mkdir -p "$consumer"
+          cd "$consumer"
+          cat > package.json <<'JSON'
+          {
+            "name": "release-consumer",
+            "version": "0.0.0",
+            "private": true
+          }
+          JSON
+          npm install --no-audit --no-fund "$RUNNER_TEMP/release-npm/$TARBALL"
+
+          node - <<'NODE'
+          const name = process.env.PACKAGE_NAME;
+          const loaded = require(name);
+          const manifest = require(`${name}/package.json`);
+
+          if (manifest.version !== process.env.VERSION) {
+            throw new Error(`installed ${manifest.version}, expected ${process.env.VERSION}`);
+          }
+          const exported = Object.keys(loaded);
+          if (exported.length === 0) {
+            throw new Error(`${name} loaded but exported nothing`);
+          }
+          console.log(`${name}@${manifest.version} loaded from ${require.resolve(name)}`);
+          console.log(`exports: ${exported.sort().join(', ')}`);
+          NODE
+
+      - name: Upload npm tarball
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-npm
+          path: ${{ runner.temp }}/release-npm/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  aggregate:
+    name: Validate complete release
+    needs:
+      - metadata
+      - contracts
+      - package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download every build artifact
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          pattern: release-*
+          path: ${{ runner.temp }}/release-inputs
+
+      - name: Reject partial or unexpected release sets
+        shell: bash
+        env:
+          TARBALL: ${{ needs.metadata.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release-assets"
+
+          # Exactly this set, not "at least" this set. A build job that dropped
+          # its artifact, or one that grew an extra file, fails here.
+          expected="$TARBALL"
+          actual="$(
+            find "$RUNNER_TEMP/release-inputs" -type f -printf '%f\n' | sort
+          )"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "release asset set mismatch" >&2
+            echo "expected:" >&2
+            awk '{ print "  " $0 }' <<<"$expected" >&2
+            echo "actual:" >&2
+            awk '{ print "  " $0 }' <<<"${actual:-(nothing)}" >&2
+            exit 1
+          fi
+
+          find "$RUNNER_TEMP/release-inputs" -type f \
+            -exec cp {} "$RUNNER_TEMP/release-assets/" \;
+          cd "$RUNNER_TEMP/release-assets"
+          sha256sum "$TARBALL" > SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+          final="$(find . -maxdepth 1 -type f -printf '%f\n' | sort)"
+          want="$(printf '%s\n' SHA256SUMS "$TARBALL" | sort)"
+          if [[ "$final" != "$want" ]]; then
+            echo "assembled asset set is wrong" >&2
+            awk '{ print "  " $0 }' <<<"${final:-(nothing)}" >&2
+            exit 1
+          fi
+
+          {
+            echo "### Release assets"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload exact release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  attest:
+    name: Attest release assets
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.metadata.outputs.publish == 'true'
+    needs:
+      - metadata
+      - aggregate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download exact release assets
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: release-assets
+          path: release-assets
+
+      - name: Create build provenance attestations
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: 'release-assets/*'
+
+  publish:
+    name: Publish atomic GitHub release
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.metadata.outputs.publish == 'true'
+    needs:
+      - metadata
+      - aggregate
+      - attest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download exact release assets
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: release-assets
+          path: release-assets
+
+      - name: Upload to a draft, verify, then publish
+        shell: bash
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ needs.metadata.outputs.commit }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          TARBALL: ${{ needs.metadata.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          cd release-assets
+          assets=("$TARBALL" SHA256SUMS)
+          for asset in "${assets[@]}"; do
+            test -f "$asset"
+          done
+
+          cat > "$RUNNER_TEMP/notes.md" <<NOTES
+          \`${TARBALL}\` is the output of \`npm pack\` at commit \`${COMMIT}\`.
+
+          Install it directly:
+
+              npm install https://github.com/${GH_REPO}/releases/download/${TAG}/${TARBALL}
+
+          \`SHA256SUMS\` covers the tarball. Both assets carry build provenance
+          attestations, verifiable with:
+
+              gh attestation verify ${TARBALL} --repo ${GH_REPO}
+          NOTES
+
+          # Reuse a draft from an interrupted run; never touch a published one.
+          if gh release view "$TAG" --json isDraft >/dev/null 2>&1; then
+            if [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != true ]]; then
+              echo "$TAG is already published; refusing to overwrite it" >&2
+              exit 1
+            fi
+          else
+            gh release create "$TAG" \
+              --draft \
+              --target "$COMMIT" \
+              --title "$TAG" \
+              --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+
+          gh release upload "$TAG" "${assets[@]}" --clobber
+
+          # Nothing goes public until every expected asset is really there and
+          # the uploaded bytes hash to what aggregate produced.
+          arrived="$(gh release view "$TAG" --json assets --jq '.assets[].name' | sort)"
+          want="$(printf '%s\n' "${assets[@]}" | sort)"
+          if [[ "$arrived" != "$want" ]]; then
+            echo "draft $TAG has the wrong asset set" >&2
+            echo "expected:" >&2
+            awk '{ print "  " $0 }' <<<"$want" >&2
+            echo "arrived:" >&2
+            awk '{ print "  " $0 }' <<<"${arrived:-(nothing)}" >&2
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/verify"
+          gh release download "$TAG" --dir "$RUNNER_TEMP/verify" --clobber
+          (cd "$RUNNER_TEMP/verify" && sha256sum -c SHA256SUMS)
+
+          gh release edit "$TAG" --draft=false --latest
+          echo "Published ${TAG} at ${COMMIT}" >> "$GITHUB_STEP_SUMMARY"

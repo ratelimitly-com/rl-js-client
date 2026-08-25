@@ -148,6 +148,36 @@ class RateLimitResult {
     }
 }
 
+Object.defineProperty(ResourceRequest.prototype, 'bucketId', {
+    get() { return this.bucketName; },
+    set(v) { this.bucketName = v; },
+    configurable: true
+});
+
+Object.defineProperty(ResourceResult.prototype, 'bucketId', {
+    get() { return this.bucketName; },
+    set(v) { this.bucketName = v; },
+    configurable: true
+});
+
+Object.defineProperty(LatencyGuard.prototype, 'serviceId', {
+    get() { return this.latencyTrackerName; },
+    set(v) { this.latencyTrackerName = v; },
+    configurable: true
+});
+
+Object.defineProperty(ServiceLatencyBlock.prototype, 'serviceId', {
+    get() { return this.latencyTrackerName; },
+    set(v) { this.latencyTrackerName = v; },
+    configurable: true
+});
+
+Object.defineProperty(GuardResult.prototype, 'serviceId', {
+    get() { return this.latencyTrackerName; },
+    set(v) { this.latencyTrackerName = v; },
+    configurable: true
+});
+
 class TenantConfig {
     constructor(dnsName, keyId, authMethod = AuthMethod.NONE, authSecret = null, servers = null, steeringFeedback = false) {
         this.dnsName = dnsName;
@@ -836,7 +866,9 @@ class RClient {
         this.config = config;
         this.serverTracker = new ServerTracker();
         this.quotas = WireProtocol._tenantQuotas(config.tenant);
-        this.config.requestPolicy.horizonMs(this.quotas.dedup_ttl_ms_max);
+        if (this.quotas && this.quotas.dedup_ttl_ms_max && this.config.requestPolicy) {
+            this.config.requestPolicy.horizonMs(this.quotas.dedup_ttl_ms_max);
+        }
         this.servers = [];
         this.lastDnsRefresh = 0;
         this.resolver = this._buildResolver();

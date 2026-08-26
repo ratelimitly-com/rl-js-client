@@ -8,6 +8,15 @@ const dgram = require('dgram');
 const crypto = require('crypto');
 const dns = require('dns');
 const { decodeApiKey } = require('./api_key_codec');
+const {
+    STEERING_PORT_MIN,
+    STEERING_PORT_MAX,
+    STEERING_PORT_COUNT,
+    nextSteeringPort,
+    isOccupiedError,
+    createBoundUdpSocket,
+    bindNextSteeringSocket
+} = require('./steering');
 
 // Protocol Constants
 const TLV_TENANT = 0x4C52;
@@ -873,6 +882,160 @@ class RClient {
         this.lastDnsRefresh = 0;
         this.resolver = this._buildResolver();
         this.dnsResolverHintShown = false;
+
+        // Persistent UDP transport and source-port steering state
+        this._transports = new Map();
+        this._nextSteeringPorts = new Map();
+        this._transportInitQueue = new Map();
+        this._steeringPending = false;
+        this._steeringApplying = false;
+        this._steeringStats = { feedbackZeroCount: 0, portChanges: 0, lastPort: null };
+        this._retiredTransports = [];
+    }
+
+    _getTransport(family, callback) {
+        const fam = family === 'udp6' ? 'udp6' : 'udp4';
+        const current = this._transports.get(fam);
+        if (current && !current.retired) {
+            return callback(null, current);
+        }
+
+        if (this._transportInitQueue.has(fam)) {
+            this._transportInitQueue.get(fam).push(callback);
+            return;
+        }
+
+        const queue = [callback];
+        this._transportInitQueue.set(fam, queue);
+
+        const startPort = this._nextSteeringPorts.get(fam) || STEERING_PORT_MIN;
+        bindNextSteeringSocket(fam, startPort)
+            .then(({ socket, selectedPort, nextPort }) => {
+                socket.unref();
+                const transport = {
+                    family: fam,
+                    socket,
+                    currentPort: selectedPort,
+                    nextPort,
+                    inFlight: new Map(),
+                    inFlightCount: 0,
+                    drainCallbacks: [],
+                    retired: false
+                };
+
+                socket.on('message', (msg, rinfo) => {
+                    if (!Buffer.isBuffer(msg) || msg.length < 28) return;
+                    const reqIdHex = msg.subarray(12, 28).toString('hex');
+                    const handler = transport.inFlight.get(reqIdHex);
+                    if (handler && typeof handler.onMessage === 'function') {
+                        handler.onMessage(msg, rinfo);
+                    }
+                });
+
+                socket.on('error', (err) => {
+                    for (const handler of transport.inFlight.values()) {
+                        if (typeof handler.onError === 'function') {
+                            handler.onError(err);
+                        }
+                    }
+                });
+
+                this._transports.set(fam, transport);
+                this._nextSteeringPorts.set(fam, nextPort);
+                if (this._steeringStats.lastPort === null) {
+                    this._steeringStats.lastPort = selectedPort;
+                }
+
+                this._transportInitQueue.delete(fam);
+                for (const cb of queue) cb(null, transport);
+            })
+            .catch((err) => {
+                this._transportInitQueue.delete(fam);
+                for (const cb of queue) cb(err);
+            });
+    }
+
+    _applySteeringFeedback(family) {
+        const fam = family === 'udp6' ? 'udp6' : 'udp4';
+        if (this._steeringPending || this._steeringApplying) {
+            return;
+        }
+        this._steeringPending = true;
+
+        const currentTransport = this._transports.get(fam);
+        const executeRebind = async () => {
+            if (this._steeringApplying) return;
+            this._steeringApplying = true;
+            try {
+                const currentPort = currentTransport ? currentTransport.currentPort : 0;
+                const startPort = this._nextSteeringPorts.get(fam) || nextSteeringPort(currentPort);
+                const { socket: newSocket, selectedPort, nextPort } = await bindNextSteeringSocket(fam, startPort);
+                newSocket.unref();
+
+                const newTransport = {
+                    family: fam,
+                    socket: newSocket,
+                    currentPort: selectedPort,
+                    nextPort,
+                    inFlight: new Map(),
+                    inFlightCount: 0,
+                    drainCallbacks: [],
+                    retired: false
+                };
+
+                newSocket.on('message', (msg, rinfo) => {
+                    if (!Buffer.isBuffer(msg) || msg.length < 28) return;
+                    const reqIdHex = msg.subarray(12, 28).toString('hex');
+                    const handler = newTransport.inFlight.get(reqIdHex);
+                    if (handler && typeof handler.onMessage === 'function') {
+                        handler.onMessage(msg, rinfo);
+                    }
+                });
+
+                newSocket.on('error', (err) => {
+                    for (const handler of newTransport.inFlight.values()) {
+                        if (typeof handler.onError === 'function') {
+                            handler.onError(err);
+                        }
+                    }
+                });
+
+                // Activate receiving on replacement before retiring old socket (Requirement 8)
+                this._transports.set(fam, newTransport);
+                this._nextSteeringPorts.set(fam, nextPort);
+
+                this._steeringStats.feedbackZeroCount++;
+                if (this._steeringStats.lastPort !== selectedPort) {
+                    this._steeringStats.portChanges++;
+                }
+                this._steeringStats.lastPort = selectedPort;
+
+                if (currentTransport) {
+                    currentTransport.retired = true;
+                    this._retiredTransports.push(currentTransport);
+                    const timer = setTimeout(() => {
+                        try {
+                            currentTransport.socket.close();
+                        } catch (_) {
+                            /* ignored */
+                        }
+                    }, 500);
+                    if (typeof timer.unref === 'function') timer.unref();
+                }
+            } catch (err) {
+                console.warn(`Source-port steering rebind failed: ${err.message}`);
+            } finally {
+                this._steeringPending = false;
+                this._steeringApplying = false;
+            }
+        };
+
+        if (currentTransport && currentTransport.inFlightCount > 0) {
+            // Apply steering only after requests using the old socket have drained (Requirement 3)
+            currentTransport.drainCallbacks.push(executeRebind);
+        } else {
+            executeRebind();
+        }
     }
 
     _buildResolver() {
@@ -1013,8 +1176,8 @@ class RClient {
             const trusted = new Set(membership.map((server) => server.serverId));
             const oldestServerId = membership[0].serverId;
             const expectedRequestId = packet.subarray(12, 28);
+            const reqIdHex = expectedRequestId.toString('hex');
             const policy = this.config.requestPolicy;
-            const socket = dgram.createSocket('udp4');
             const seenServerIds = new Set();
             let candidate = null;
             let round = 0;
@@ -1022,102 +1185,138 @@ class RClient {
             let timer = null;
             let terminal = false;
 
-            const better = (left, right) => {
-                if (!right) return true;
-                const leftStart = RClient.serverStartSecondsFromId(left.serverId);
-                const rightStart = RClient.serverStartSecondsFromId(right.serverId);
-                return leftStart < rightStart ||
-                    (leftStart === rightStart && left.serverId < right.serverId);
-            };
-            const close = () => {
-                if (timer) clearTimeout(timer);
-                timer = null;
-                try { socket.close(); } catch (_) { /* already closed */ }
-            };
-            // One unreachable endpoint must not discard the endpoints behind it:
-            // a dual-stack SRV target expands to one endpoint per address sharing
-            // a server id, so an IPv6 address on an IPv4-only host would otherwise
-            // fail every request. Fail the request only if nothing got out at all.
-            const sendMissing = (bestEffort) => {
-                const targets = membership.filter((server) => !seenServerIds.has(server.serverId));
-                if (targets.length === 0) return;
-                let pending = targets.length;
-                let delivered = 0;
-                let lastError = null;
-                for (const server of targets) {
-                    socket.send(packet, server.port, server.ip, (error) => {
-                        if (error) lastError = error; else delivered += 1;
-                        pending -= 1;
-                        if (pending > 0 || bestEffort || terminal) return;
-                        if (delivered === 0) {
-                            terminal = true;
-                            close();
-                            callback(lastError);
-                        } else if (delivered < targets.length) {
-                            // Partial delivery is otherwise invisible: the request
-                            // still succeeds, but the oldest replica's answer wins,
-                            // so losing it quietly downgrades the result.
-                            console.warn(
-                                `Rate request reached ${delivered} of ${targets.length} endpoints ` +
-                                `(${targets.length - delivered} unreachable): ${lastError.message}`
-                            );
-                        }
-                    });
+            this._getTransport('udp4', (transportErr, transport) => {
+                if (transportErr) {
+                    callback(transportErr);
+                    return;
                 }
-            };
-            const finish = (error, selected) => {
-                if (terminal) return;
-                terminal = true;
-                if (!error && selected && policy.completionDelivery) sendMissing(true);
-                close();
-                callback(error, selected);
-            };
-            const armRound = () => {
-                sendMissing(false);
-                const waitMs = policy.unitMs * policy.replayGap.units(round);
-                timer = setTimeout(() => {
-                    timer = null;
-                    if (candidate) {
-                        finish(null, candidate);
-                    } else if (round < policy.replayCount) {
-                        round += 1;
-                        armRound();
-                    } else if (policy.finalReceiveUnits > 0) {
-                        finalReceive = true;
-                        timer = setTimeout(
-                            () => finish(new TimeoutError('No valid response within the request-policy horizon')),
-                            policy.unitMs * policy.finalReceiveUnits
-                        );
-                    } else {
-                        finish(new TimeoutError('No valid response within the request-policy horizon'));
-                    }
-                }, waitMs);
-            };
 
-            socket.on('message', (response) => {
-                if (terminal) return;
+                const socket = transport.socket;
+                transport.inFlightCount++;
                 try {
-                    const serverId = this._extractResponseServerId(response);
-                    if (serverId === null || !trusted.has(serverId)) return;
-                    const parsed = WireProtocol.parseRateResponse(
-                        response,
-                        this.config.tenant,
-                        resources,
-                        guards,
-                        expectedRequestId
-                    );
-                    seenServerIds.add(parsed.serverId);
-                    this.serverTracker.recordResponse(parsed.serverId, 0);
-                    if (better(parsed, candidate)) candidate = parsed;
-                    if (parsed.serverId === oldestServerId || round > 0 || finalReceive) {
-                        finish(null, candidate);
-                    }
+                    socket.ref();
                 } catch (_) {
-                    // Invalid, unauthenticated, unrelated, and malformed datagrams are packet-local noise.
+                    /* ignored */
                 }
+
+                const better = (left, right) => {
+                    if (!right) return true;
+                    const leftStart = RClient.serverStartSecondsFromId(left.serverId);
+                    const rightStart = RClient.serverStartSecondsFromId(right.serverId);
+                    return leftStart < rightStart ||
+                        (leftStart === rightStart && left.serverId < right.serverId);
+                };
+
+                const cleanup = () => {
+                    if (timer) clearTimeout(timer);
+                    timer = null;
+                    transport.inFlight.delete(reqIdHex);
+                    transport.inFlightCount--;
+                    if (transport.inFlightCount === 0) {
+                        try {
+                            socket.unref();
+                        } catch (_) {
+                            /* ignored */
+                        }
+                        if (transport.drainCallbacks.length > 0) {
+                            const cbs = transport.drainCallbacks.slice();
+                            transport.drainCallbacks.length = 0;
+                            for (const cb of cbs) cb();
+                        }
+                    }
+                };
+
+                const sendMissing = (bestEffort) => {
+                    const targets = membership.filter((server) => !seenServerIds.has(server.serverId));
+                    if (targets.length === 0) return;
+                    let pending = targets.length;
+                    let delivered = 0;
+                    let lastError = null;
+                    for (const server of targets) {
+                        socket.send(packet, server.port, server.ip, (error) => {
+                            if (error) lastError = error; else delivered += 1;
+                            pending -= 1;
+                            if (pending > 0 || bestEffort || terminal) return;
+                            if (delivered === 0) {
+                                terminal = true;
+                                cleanup();
+                                callback(lastError);
+                            } else if (delivered < targets.length) {
+                                console.warn(
+                                    `Rate request reached ${delivered} of ${targets.length} endpoints ` +
+                                    `(${targets.length - delivered} unreachable): ${lastError.message}`
+                                );
+                            }
+                        });
+                    }
+                };
+
+                const finish = (error, selected) => {
+                    if (terminal) return;
+                    terminal = true;
+                    if (!error && selected && policy.completionDelivery) sendMissing(true);
+                    cleanup();
+
+                    // Apply steering feedback if server advised port change (steeringFeedback === false)
+                    if (!error && selected && this.config.tenant.steeringFeedback && selected.steeringFeedback === false) {
+                        this._applySteeringFeedback('udp4');
+                    }
+
+                    callback(error, selected);
+                };
+
+                transport.inFlight.set(reqIdHex, {
+                    onMessage: (response) => {
+                        if (terminal) return;
+                        try {
+                            const serverId = this._extractResponseServerId(response);
+                            if (serverId === null || !trusted.has(serverId)) return;
+                            const parsed = WireProtocol.parseRateResponse(
+                                response,
+                                this.config.tenant,
+                                resources,
+                                guards,
+                                expectedRequestId
+                            );
+                            seenServerIds.add(parsed.serverId);
+                            this.serverTracker.recordResponse(parsed.serverId, 0);
+                            if (better(parsed, candidate)) candidate = parsed;
+                            if (parsed.serverId === oldestServerId || round > 0 || finalReceive) {
+                                finish(null, candidate);
+                            }
+                        } catch (_) {
+                            // Invalid, unauthenticated, unrelated, and malformed datagrams are packet-local noise.
+                        }
+                    },
+                    onError: (err) => {
+                        finish(err);
+                    }
+                });
+
+                const armRound = () => {
+                    sendMissing(false);
+                    const waitMs = policy.unitMs * policy.replayGap.units(round);
+                    timer = setTimeout(() => {
+                        timer = null;
+                        if (candidate) {
+                            finish(null, candidate);
+                        } else if (round < policy.replayCount) {
+                            round += 1;
+                            armRound();
+                        } else if (policy.finalReceiveUnits > 0) {
+                            finalReceive = true;
+                            timer = setTimeout(
+                                () => finish(new TimeoutError('No valid response within the request-policy horizon')),
+                                policy.unitMs * policy.finalReceiveUnits
+                            );
+                        } else {
+                            finish(new TimeoutError('No valid response within the request-policy horizon'));
+                        }
+                    }, waitMs);
+                };
+
+                armRound();
             });
-            socket.on('error', (error) => finish(error));
-            armRound();
         });
     }
     
@@ -1138,7 +1337,6 @@ class RClient {
         refreshIfNeeded((error) => {
             if (error) {
                 console.warn(`DNS refresh failed: ${error.message}`);
-                // Continue with existing servers if any
                 if (this.servers.length === 0) {
                     return callback(new RateLimitError('No servers available'));
                 }
@@ -1147,89 +1345,98 @@ class RClient {
             if (this.servers.length === 0) {
                 return callback(new RateLimitError('No servers available'));
             }
-            
-            const socket = dgram.createSocket('udp4');
-            const startTime = Date.now();
-            let responseReceived = false;
-            let socketClosed = false;
-            
-            const safeCloseSocket = () => {
-                if (!socketClosed) {
-                    socketClosed = true;
-                    socket.close();
+
+            this._getTransport('udp4', (transportErr, transport) => {
+                if (transportErr) {
+                    return callback(transportErr);
                 }
-            };
-            
-            const timeout = expectResponse ? setTimeout(() => {
-                if (!responseReceived) {
-                    safeCloseSocket();
-                    callback(new TimeoutError('No response received within timeout'));
-                }
-            }, this.config.requestPolicy.horizonMs(this.quotas.dedup_ttl_ms_max)) : null;
-            
-            // Handle responses
-            socket.on('message', (response, rinfo) => {
+
+                const socket = transport.socket;
+                transport.inFlightCount++;
                 try {
-                    if (response.length >= 16) {
-                        const serverId = this._extractResponseServerId(response);
-                        if (serverId === null) {
-                            return;
+                    socket.ref();
+                } catch (_) {
+                    /* ignored */
+                }
+                const expectedRequestId = packet.length >= 28 ? packet.subarray(12, 28) : null;
+                const reqIdHex = expectedRequestId ? expectedRequestId.toString('hex') : null;
+                let responseReceived = false;
+                let timer = null;
+
+                const cleanup = () => {
+                    if (timer) clearTimeout(timer);
+                    timer = null;
+                    if (reqIdHex) transport.inFlight.delete(reqIdHex);
+                    transport.inFlightCount--;
+                    if (transport.inFlightCount === 0) {
+                        try {
+                            socket.unref();
+                        } catch (_) {
+                            /* ignored */
                         }
-                        const trustedServer = this.servers.find((server) => server.serverId === serverId);
-                        if (!trustedServer) {
-                            return;
+                        if (transport.drainCallbacks.length > 0) {
+                            const cbs = transport.drainCallbacks.slice();
+                            transport.drainCallbacks.length = 0;
+                            for (const cb of cbs) cb();
                         }
+                    }
+                };
 
-                        if (responseReceived) return;
-                        responseReceived = true;
-
-                        clearTimeout(timeout);
-                        safeCloseSocket();
-
-                        const responseTime = Date.now() - startTime;
-                        this.serverTracker.recordResponse(serverId, responseTime);
-
-                        callback(null, response);
-                    } else {
+                if (expectResponse && reqIdHex) {
+                    timer = setTimeout(() => {
                         if (!responseReceived) {
                             responseReceived = true;
-                            clearTimeout(timeout);
-                            safeCloseSocket();
-                            callback(new ProtocolError('Invalid response format'));
+                            cleanup();
+                            callback(new TimeoutError('No response received within timeout'));
                         }
-                    }
-                } catch (error) {
-                    if (!responseReceived) {
-                        responseReceived = true;
-                        clearTimeout(timeout);
-                        safeCloseSocket();
-                        callback(error);
-                    }
+                    }, this.config.requestPolicy.horizonMs(this.quotas ? this.quotas.dedup_ttl_ms_max : 0xffffffff));
+
+                    transport.inFlight.set(reqIdHex, {
+                        onMessage: (response) => {
+                            try {
+                                if (response.length >= 16) {
+                                    const serverId = this._extractResponseServerId(response);
+                                    if (serverId === null) return;
+                                    const trustedServer = this.servers.find((server) => server.serverId === serverId);
+                                    if (!trustedServer) return;
+
+                                    if (responseReceived) return;
+                                    responseReceived = true;
+                                    cleanup();
+                                    this.serverTracker.recordResponse(serverId, 0);
+                                    callback(null, response);
+                                }
+                            } catch (err) {
+                                if (!responseReceived) {
+                                    responseReceived = true;
+                                    cleanup();
+                                    callback(err);
+                                }
+                            }
+                        },
+                        onError: (err) => {
+                            if (!responseReceived) {
+                                responseReceived = true;
+                                cleanup();
+                                callback(err);
+                            }
+                        }
+                    });
+                }
+
+                for (const server of this.servers) {
+                    socket.send(packet, server.port, server.ip, (sendErr) => {
+                        if (sendErr) {
+                            console.warn(`Failed to send to ${server.ip}:${server.port}: ${sendErr.message}`);
+                        }
+                    });
+                }
+
+                if (!expectResponse) {
+                    cleanup();
+                    callback(null, null);
                 }
             });
-            
-            socket.on('error', (error) => {
-                clearTimeout(timeout);
-                callback(error);
-            });
-            
-            // Send to all servers
-            for (const server of this.servers) {
-                socket.send(packet, server.port, server.ip, (error) => {
-                    if (error) {
-                        console.warn(`Failed to send to ${server.ip}:${server.port}: ${error.message}`);
-                    }
-                });
-            }
-            
-            if (!expectResponse) {
-                // Give UDP packets time to be sent before closing socket
-                setTimeout(() => {
-                    clearTimeout(timeout);
-                    safeCloseSocket();
-                    callback(null, null);
-                }, 10); // 10ms delay
-            }
         });
     }
     
@@ -1305,11 +1512,36 @@ class RClient {
     }
     
     getServerStats() {
+        const currentV4 = this._transports.get('udp4');
         return {
             servers: this.servers,
             stableServers: this.serverTracker.getStableServers(),
-            lastDnsRefresh: this.lastDnsRefresh
+            lastDnsRefresh: this.lastDnsRefresh,
+            steering: {
+                ...this._steeringStats,
+                currentPort: currentV4 ? currentV4.currentPort : null,
+                nextPort: this._nextSteeringPorts.get('udp4') || null
+            }
         };
+    }
+
+    destroy() {
+        for (const transport of this._transports.values()) {
+            try {
+                transport.socket.close();
+            } catch (_) {
+                /* ignored */
+            }
+        }
+        this._transports.clear();
+        for (const transport of this._retiredTransports) {
+            try {
+                transport.socket.close();
+            } catch (_) {
+                /* ignored */
+            }
+        }
+        this._retiredTransports = [];
     }
 }
 
@@ -1325,7 +1557,7 @@ function createClient(authKey, dnsName = null, options = {}) {
         authMethod,
         authKey,
         null,
-        Boolean(options.steeringFeedback)
+        options.steeringFeedback !== undefined ? Boolean(options.steeringFeedback) : true
     );
     const config = new RClientConfig(tenantConfig, options);
     return new RClient(config);
@@ -1351,5 +1583,12 @@ module.exports = {
     ProtocolError,
     WireProtocol,
     ServerTracker,
-    createClient
+    createClient,
+    STEERING_PORT_MIN,
+    STEERING_PORT_MAX,
+    STEERING_PORT_COUNT,
+    nextSteeringPort,
+    isOccupiedError,
+    createBoundUdpSocket,
+    bindNextSteeringSocket
 };

@@ -3,19 +3,46 @@
   "version": "1.0.1",
   "description": "RateLimitly JavaScript R-Client for centralized rate limiting and load shedding",
   "main": "client.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./client.js"
+    },
+    "./api_key_codec": {
+      "types": "./api_key_codec.d.ts",
+      "default": "./api_key_codec.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "client.js",
+    "steering.js",
+    "api_key_codec.js",
+    "index.d.ts",
+    "api_key_codec.d.ts",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md"
+  ],
   "scripts": {
-    "test": "node test_api_key_v1.js && node test_policy.js && node test_ha.js && node test_send_failure.js && node test_client.js",
+    "test": "node test_api_key_v1.js && node test_policy.js && node test_ha.js && node test_steering.js && node test_steering_integration.js && node test_send_failure.js && node test_client.js",
     "example": "node example_usage.js",
     "start": "node client.js"
   },
   "keywords": [
     "rate-limiting",
     "load-shedding",
+    "admission-control",
     "client-library",
     "ratelimitly",
-    "high-availability"
+    "high-availability",
+    "source-port-steering",
+    "zero-dependencies",
+    "udp",
+    "sliding-window"
   ],
-  "author": "RateLimitly Team",
+  "author": "RateLimitly Team <team@ratelimitly.com>",
   "license": "MIT",
   "engines": {
     "node": ">=20.0.0"

@@ -109,12 +109,16 @@ jobs:
           NODE
 
   test:
-    name: node ${{ matrix.node-version }}
-    runs-on: ubuntu-latest
+    name: node ${{ matrix.node-version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
         node-version:
           - '20'
           - '22'
@@ -133,12 +137,9 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
-      # `npm test` runs test_api_key_v1.js, test_policy.js, test_ha.js and
-      # test_client.js. The sub-tests inside test_client.js that need a live
-      # RateLimitly server print "Integration test skipped (no server)" and pass,
-      # so the integration path is NOT proven by this job -- only the wire
-      # encoding, canonical IDs, HA policy and configuration paths are. The
-      # `production-smoke` job below is what proves the live protocol exchange.
+      # `npm test` runs test_api_key_v1.js, test_policy.js, test_ha.js,
+      # test_steering.js, test_steering_integration.js, test_send_failure.js
+      # and test_client.js.
       - name: Run test suite
         run: npm test
 

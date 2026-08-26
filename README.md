@@ -1,576 +1,265 @@
-# RateLimitly JavaScript R-Client
+# RateLimitly JavaScript Client (`ratelimitly-client`)
 
-A comprehensive Node.js client library for RateLimitly centralized rate limiting and load shedding.
+[![CI](https://github.com/ratelimitly-com/rl-js-client/actions/workflows/ci.yml/badge.svg)](https://github.com/ratelimitly-com/rl-js-client/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/ratelimitly-client.svg)](https://www.npmjs.com/package/ratelimitly-client)
+[![Node.js Version](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg)](https://nodejs.org)
+[![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue.svg)](package.json)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Overview
+Official Node.js client library for **RateLimitly** — high-performance, centralized distributed rate limiting and latency-based load shedding over low-latency UDP wire protocol.
 
-The JavaScript R-Client provides a callback-based interface for applications to:
-- **Gate resource access** through centralized rate limiting
-- **Report latency metrics** for intelligent load shedding
-- **Handle High Availability** scenarios with multiple servers
-- **Integrate seamlessly** with Node.js applications
+---
+
+## Key Highlights
+
+- **⚡ Sub-Millisecond UDP Wire Protocol**: Microsecond-speed binary serialization over UDP without TCP connection overhead or Redis roundtrips.
+- **🛡️ Zero Dependencies**: Pure Node.js implementation built strictly on standard library built-ins (`crypto`, `dgram`, `dns`, `events`, `buffer`).
+- **🔄 Continuous Sliding Window**: Smooth, real-time distributed admission control without fixed-window boundary burst resets.
+- **🔒 AES-256-GCM Encryption & Authentication**: Authenticated Associated Data (AAD) binds clear headers and encrypts PDUs with unique CSPRNG nonces per datagram.
+- **🎯 Multi-Resource Atomic Checks**: Evaluate global, tenant, user, and endpoint quotas together in a single atomic network roundtrip.
+- **⏱️ Latency Guards & Load Shedding**: Protect downstream databases and microservices by shedding traffic automatically when latency exceeds defined thresholds.
+- **🌐 High Availability & DNS Discovery**: Dynamic SRV discovery (`_ratelimitly._udp.<domain>`) and configurable retry gap schedules (fixed, linear, exponential).
+- **📘 Full TypeScript Support**: First-class TypeScript declarations (`index.d.ts` and `api_key_codec.d.ts`) included out of the box.
+
+---
+
+## Architecture Overview
+
+```mermaid
+flowchart LR
+    App["Node.js Application"] -->|checkRateLimit| Client["RClient (ratelimitly-client)"]
+    Client -->|Zero-Config DNS SRV| DNS["DNS Discovery (c-${keyId}.p0.ratelimitly.com)"]
+    Client -->|UDP Wire Protocol / AES-256-GCM| NodeA["RateLimitly Node A"]
+    Client -->|UDP Wire Protocol / AES-256-GCM| NodeB["RateLimitly Node B"]
+    NodeA -->|Admit / Deny Decision| Client
+    Client -->|Result| App
+```
+
+---
+
+## Installation
+
+```bash
+npm install ratelimitly-client
+```
+
+> **Requirements**: Node.js `>= 20.0.0`
+
+---
 
 ## Quick Start
 
-### Installation
-
-```bash
-# Copy client files to your project
-cp client.js your_project/
-cp api_key_codec.js your_project/
-cp package.json your_project/  # Optional for npm integration
-```
-
-### Basic Usage
-
 ```javascript
-const { createClient, ResourceRequest, ServiceLatencyBlock } = require('./client.js');
+const { createClient, ResourceRequest } = require('ratelimitly-client');
 
-// Create client
-const client = createClient('ratelimitly.example.com', 12345);
+// 1. Initialize client with your RateLimitly Bech32 API key
+// (DNS discovery domain is derived automatically from the key)
+const client = createClient(process.env.RATELIMITLY_AUTH_KEY);
 
-// Check rate limit
-const resources = [new ResourceRequest('api_calls', 60000, 1000, 1)];
+// 2. Define resource limit (e.g. 100 requests per 60 seconds)
+const resources = [
+  new ResourceRequest('api_traffic', 60000, 100, 1)
+];
 
-client.checkRateLimit(resources, (error, result) => {
-    if (error) {
-        handleRateLimitError(error);
-        return;
-    }
+// 3. Check rate limit
+client.checkRateLimit(resources, (err, result) => {
+  if (err) {
+    console.error('Communication error:', err.message);
+    return;
+  }
 
-    if (!result.success) {
-        handleRateLimitExceeded();
-        return;
-    }
-
-    performApiCall(() => {
-        const block = new ServiceLatencyBlock({
-            latencyTrackerName: 'api_service',
-            observedLatency: 85.5,
-            ttlMs: 10000,
-            maxSamples: 100,
-            bufferSize: 20,
-            minSampleThreshold: 8
-        });
-        client.reportLatency([block], () => {});
-    });
+  if (result.success) {
+    console.log('✅ Request admitted by RateLimitly');
+  } else {
+    console.log('⛔ Rate limit exceeded! Tokens deficit:', result.resourceResults[0].tokensDeficit);
+  }
 });
 ```
 
-## Features
+---
 
-### ✅ **Complete Wire Protocol Support**
-- Full MVP protocol implementation
-- All authentication methods (None, Cookie, AES-256-GCM)
-- Cookie/AES credentials provided as tenant Bech32 keys (`rl-cookie...`, `rl-aes...`) with embedded quotas
-- Guards and resources with atomic processing
-- Little-endian binary encoding with Buffer API
+## Core Features & Usage Patterns
 
-### ✅ **High Availability**
-- DNS-based server discovery with async resolution
-- Multi-server request distribution
-- Server stability tracking with time-based validation
-- Automatic failover logic with first valid response wins (auth/correlation/trust checks)
-
-### ✅ **Modern JavaScript**
-- ES6+ compatible implementation
-- Optional Promise wrappers can be added by callers
-- BigInt support for 64-bit integers
-- Modern Node.js Buffer and dgram APIs
-
-### ✅ **Production Ready**
-- Comprehensive error handling with custom error types
-- Configurable timeouts and retries
-- Built-in logging and debugging
-- Memory efficient with automatic cleanup
-- Optional `RCLIENT_DNS_SERVER=127.0.0.1[:port]` override for local dnsmasq/SRV testing
-
-## API Reference
-
-### Core Classes
-
-#### `RClient`
-Main client class for rate limiting operations.
-
-```javascript
-class RClient {
-    constructor(config)
-    checkRateLimit(resources, guards = [], metricsLabel = null, callback)
-    reportLatency(serviceLatencyBlocks, callback)
-    getServerStats()
-}
-```
-
-#### `ResourceRequest`
-Defines a rate-limited resource.
-
-```javascript
-class ResourceRequest {
-    constructor(bucketName, windowSizeMs, rateLimit, tokensRequested)
-}
-```
-
-#### `LatencyGuard`
-Defines a latency threshold guard.
-
-```javascript
-class LatencyGuard {
-    constructor(config)
-}
-
-// Usage
-const guard = new LatencyGuard({
-    latencyTrackerName: 'database',
-    thresholdMs: 100,
-    ttlMs: 10000,
-    maxSamples: 100,
-    bufferSize: 20,
-    minSampleThreshold: 8
-});
-```
-
-#### `ServiceLatencyBlock`
-Defines a latency reporting block.
-
-```javascript
-class ServiceLatencyBlock {
-    constructor(config)
-}
-
-// Usage
-const block = new ServiceLatencyBlock({
-    latencyTrackerName: 'database',
-    observedLatency: 85.5,
-    ttlMs: 10000,
-    maxSamples: 100,
-    bufferSize: 20,
-    minSampleThreshold: 8
-});
-```
-
-#### Content-defined IDs
-
-The public request objects accept names, not precomputed wire IDs. The client
-derives each 16-byte identifier from the name and the complete definition of
-the corresponding server-side state:
-
-- bucket ID: `bucketName`, `windowSizeMs`, and `rateLimit`;
-- latency-tracker ID: `latencyTrackerName`, `ttlMs`, `maxSamples`,
-  `bufferSize`, and `minSampleThreshold`.
-
-`thresholdMs` is a guard condition and `observedLatency` is a sample, so neither
-participates in latency-tracker identity. A guard and a report with the same
-tracker name and stored-state settings therefore use the same ID. Changing any
-identity-defining setting creates a different bucket or tracker.
-
-`CanonicalIds.bucketId(...)` and `CanonicalIds.latencyTrackerId(...)` expose
-the same derivation for code that needs the exact 16-byte `Buffer`.
-
-#### `RateLimitResult`
-Result of a rate limit check.
-
-```javascript
-class RateLimitResult {
-    constructor(success, guardResults, resourceResults, serverId)
-}
-```
-
-### Configuration
-
-#### `TenantConfig`
-Tenant-specific configuration.
-
-```javascript
-class TenantConfig {
-    constructor(dnsName, keyId, authMethod = AuthMethod.NONE, authSecret = null, servers = null, steeringFeedback = false)
-}
-```
-
-`authSecret` MUST be a tenant Bech32 key for `COOKIE` and `AES_GCM`.
-`dnsName` MUST be an SRV hostname. Direct IP targets such as `127.0.0.1` are rejected.
-
-#### `RClientConfig`
-Client configuration options.
-
-```javascript
-class RClientConfig {
-    constructor(tenant, options = {
-        timeoutMs: 1000,
-        retryAttempts: 2,
-        serverStabilityThresholdMs: 30000,
-        dnsRefreshIntervalS: 300
-    })
-}
-```
-
-### Authentication Methods
-
-```javascript
-const AuthMethod = {
-    NONE: 'none',
-    COOKIE: 'cookie',
-    AES_GCM: 'aes_gcm'
-};
-```
-
-## Usage Patterns
-
-### 1. Basic Rate Limiting
-
-```javascript
-const client = createClient('ratelimitly.example.com', 12345);
-
-const resources = [new ResourceRequest('api_calls', 60000, 1000, 1)];
-client.checkRateLimit(resources, (error, result) => {
-    if (error) throw error;
-    if (result.success) {
-        performOperation();
-    }
-});
-```
-
-### 2. With Latency Guards
-
-```javascript
-const resources = [new ResourceRequest('db_queries', 1000, 100, 1)];
-const guards = [new LatencyGuard({
-    latencyTrackerName: 'database',
-    thresholdMs: 50.0,
-    ttlMs: 10000,
-    maxSamples: 100,
-    bufferSize: 20,
-    minSampleThreshold: 8
-})];
-
-client.checkRateLimit(resources, guards, (error, result) => {
-    if (error) throw error;
-    if (result.success) {
-        const start = Date.now();
-        queryDatabase(() => {
-            const latency = Date.now() - start;
-            
-            const block = new ServiceLatencyBlock({
-                latencyTrackerName: 'database',
-                observedLatency: latency,
-                ttlMs: 10000,
-                maxSamples: 100,
-                bufferSize: 20,
-                minSampleThreshold: 8
-            });
-            client.reportLatency([block], () => {});
-        });
-    });
-});
-```
-
-### 3. Authentication
-
-```javascript
-const tenantConfig = new TenantConfig(
-    'ratelimitly.example.com',
-    12345,
-    AuthMethod.COOKIE,
-    'rl-cookie1xgyszqqqqqqqqdhgpkk3494ftjv7qdvxhft7eaynq9funnhld00xxv2llt6gjrmjqqqqzqqqqsqqqqqsqqqyqqqqqqzu884g'
-);
-
-const config = new RClientConfig(tenantConfig);
-const client = new RClient(config);
-```
-
-### 4. Promise Wrapper Pattern
-
-```javascript
-function checkRateLimitAsync(client, resources, guards = [], metricsLabel = null) {
-    return new Promise((resolve, reject) => {
-        client.checkRateLimit(resources, guards, metricsLabel, (error, result) => {
-            if (error) {
-                reject(error);
-                return;
-            }
-            resolve(result);
-        });
-    });
-}
-
-function reportLatencyAsync(client, blocks) {
-    return new Promise((resolve, reject) => {
-        client.reportLatency(blocks, (error) => {
-            if (error) {
-                reject(error);
-                return;
-            }
-            resolve();
-        });
-    });
-}
-
-const result = await checkRateLimitAsync(client, resources);
-if (result.success) {
-    await reportLatencyAsync(client, [block]);
-}
-```
-
-### 5. Context Pattern
-
-```javascript
-async function rateLimitedOperation(client, bucketName, limit, operation) {
-    const resources = [new ResourceRequest(bucketName, 60000, limit, 1)];
-    const result = await checkRateLimitAsync(client, resources);
-    
-    if (!result.success) {
-        throw new Error(`Rate limit exceeded for ${bucketName}`);
-    }
-    
-    const start = Date.now();
-    await operation();
-    
-    const latency = Date.now() - start;
-    const block = new ServiceLatencyBlock({
-        latencyTrackerName: bucketName,
-        observedLatency: latency,
-        ttlMs: 10000,
-        maxSamples: 100,
-        bufferSize: 20,
-        minSampleThreshold: 8
-    });
-    await reportLatencyAsync(client, [block]);
-}
-
-// Usage
-await rateLimitedOperation(client, 'file_uploads', 10, async () => {
-    await uploadFile();
-});
-```
-
-### 6. Bulk Operations
+### 1. Multi-Resource Atomic Checks
+Evaluate multiple limits in a single datagram. If any quota is exceeded, the request is denied as an atomic unit:
 
 ```javascript
 const resources = [
-    new ResourceRequest('read_ops', 1000, 1000, 10),
-    new ResourceRequest('write_ops', 1000, 100, 2),
-    new ResourceRequest('admin_ops', 60000, 10, 1)
+  new ResourceRequest('global_traffic', 60000, 10000, 1), // 10,000 req/min
+  new ResourceRequest(`user:${userId}`, 1000, 20, 1),       // 20 req/sec
+  new ResourceRequest(`org:${orgId}:burst`, 10000, 100, 1)  // 100 req/10s
 ];
+
+client.checkRateLimit(resources, (err, result) => {
+  if (result && result.success) {
+    // All quotas passed
+  }
+});
+```
+
+### 2. Latency Guards & Dynamic Load Shedding
+Protect downstream services (e.g. databases, external payment APIs) from brownouts:
+
+```javascript
+const { LatencyGuard, ServiceLatencyBlock } = require('ratelimitly-client');
 
 const guards = [
-    new LatencyGuard({
-        latencyTrackerName: 'primary_db',
-        thresholdMs: 50.0,
-        ttlMs: 10000,
-        maxSamples: 100,
-        bufferSize: 20,
-        minSampleThreshold: 8
-    }),
-    new LatencyGuard({
-        latencyTrackerName: 'cache',
-        thresholdMs: 10.0,
-        ttlMs: 10000,
-        maxSamples: 100,
-        bufferSize: 20,
-        minSampleThreshold: 8
-    })
+  new LatencyGuard({
+    latencyTrackerName: 'primary_postgres',
+    thresholdMs: 150,       // Max acceptable downstream latency
+    ttlMs: 300000,          // Sample window TTL (5 minutes)
+    maxSamples: 32,         // Max moving window samples
+    bufferSize: 20,         // Sample buffer size
+    minSampleThreshold: 5   // Minimum samples before guard activates
+  })
 ];
 
-const result = await checkRateLimitAsync(client, resources, guards);
-```
+client.checkRateLimit(resources, guards, 'checkout.api', async (err, result) => {
+  if (!result || !result.success) {
+    // Rate limit or latency guard tripped
+    return;
+  }
 
-## Error Handling
+  // Execute database query
+  const start = Date.now();
+  await executeDatabaseQuery();
+  const elapsed = Date.now() - start;
 
-```javascript
-const { RateLimitError, TimeoutError, AuthenticationError } = require('./client.js');
-
-try {
-    const result = await checkRateLimitAsync(client, resources);
-} catch (error) {
-    if (error instanceof TimeoutError) {
-        // Handle timeout
-        console.warn('Rate limit check timed out');
-    } else if (error instanceof AuthenticationError) {
-        // Handle auth failure
-        console.error('Authentication failed');
-    } else if (error instanceof RateLimitError) {
-        // Handle other rate limit errors
-        console.error(`Rate limit error: ${error.message}`);
-    }
-}
-```
-
-## High Availability
-
-The client automatically handles HA scenarios:
-
-- For mutating operations, commit safety MUST be preserved (single effective commit authority, or strongly consistent shared state).
-- Response acceptance SHOULD require auth/tag validity, request correlation (`unique_id`), and trusted-server validation.
-
-```javascript
-// HA configuration
-const config = new RClientConfig(tenantConfig, {
-    serverStabilityThresholdMs: 30000,  // 30s stability requirement
-    dnsRefreshIntervalS: 300            // 5min DNS refresh
-});
-
-const client = new RClient(config);
-
-// Monitor server health
-const stats = client.getServerStats();
-console.log(`Servers: ${stats.servers}`);
-console.log(`Stable: ${stats.stableServers}`);
-```
-
-## Testing
-
-### Unit Tests
-
-```bash
-node test_client.js
-```
-
-### Integration Tests
-
-```bash
-# Start any compatible Ratelimitly server on UDP port 29292
-# Ensure your SRV hostname resolves, for example:
-#   export RCLIENT_TARGET_HOST=ratelimitly.local
-#   export RCLIENT_DNS_SERVER=127.0.0.1
-
-# Run client tests
-node test_client.js
-
-# Run examples
-node example_usage.js
-```
-
-### Performance Testing
-
-```javascript
-const client = createClient('ratelimitly.example.com', 12345);
-const resources = [new ResourceRequest('perf_test', 1000, 10000, 1)];
-
-// Measure latency
-const start = Date.now();
-for (let i = 0; i < 1000; i++) {
-    await checkRateLimitAsync(client, resources);
-}
-const end = Date.now();
-
-const avgLatency = (end - start) / 1000;
-console.log(`Average client latency: ${avgLatency}ms`);
-```
-
-## Dependencies
-
-- **Node.js 14+**: Required for BigInt and modern JavaScript support
-- **Standard Library Only**: No external dependencies
-- **Built-in Modules**: `dgram`, `crypto`, `dns`
-
-## Thread Safety
-
-JavaScript is single-threaded, but the client handles concurrent operations:
-
-```javascript
-// Concurrent requests are handled properly
-const promises = [];
-for (let i = 0; i < 10; i++) {
-    const resources = [new ResourceRequest(`concurrent_${i}`, 1000, 100, 1)];
-    promises.push(checkRateLimitAsync(client, resources));
-}
-
-const results = await Promise.all(promises);
-console.log(`Completed ${results.length} concurrent requests`);
-```
-
-## Monitoring and Metrics
-
-### Built-in Statistics
-
-```javascript
-const stats = client.getServerStats();
-// Returns:
-// {
-//   servers: ['10.0.1.1', '10.0.1.2'],
-//   stableServers: [123, 456],
-//   lastDnsRefresh: 1640995200000
-// }
-```
-
-### Custom Metrics Integration
-
-```javascript
-class MetricsClient extends RClient {
-    checkRateLimit(resources, guards, metricsLabel, callback) {
-        const start = Date.now();
-        super.checkRateLimit(resources, guards, metricsLabel, (error, result) => {
-            const latency = Date.now() - start;
-            this.recordMetric('rate_limit_latency', latency);
-            this.recordMetric(error ? 'rate_limit_error' : 'rate_limit_success', 1);
-            callback(error, result);
-        });
-    }
-    
-    recordMetric(name, value) {
-        // Integrate with your metrics system
-        console.log(`Metric ${name}: ${value}`);
-    }
-}
-```
-
-## Best Practices
-
-1. **Reuse Client Instances**: Create once, use many times
-2. **Handle Errors Gracefully**: Always handle callback errors, or wrap the API in promises consistently
-3. **Report Latencies**: Help the system make better load shedding decisions
-4. **Configure Timeouts**: Set appropriate timeouts for your use case
-5. **Monitor Server Health**: Use `getServerStats()` for monitoring
-6. **Use Guards Wisely**: Set realistic latency thresholds
-7. **Batch Resources**: Check multiple resources in single request when possible
-8. **Use Promise Wrappers Carefully**: If you prefer `async`/`await`, wrap the callback API explicitly
-
-## Troubleshooting
-
-### Common Issues
-
-**DNS Resolution Fails**
-```javascript
-// The client requires SRV discovery rather than direct A records
-const dns = require('dns');
-dns.resolveSrv('_ratelimitly._udp.ratelimitly.example.com', (error, records) => {
-    console.log(error || records);
+  // Asynchronously report downstream latency back to RateLimitly
+  client.reportLatency([
+    new ServiceLatencyBlock({
+      latencyTrackerName: 'primary_postgres',
+      observedLatency: elapsed,
+      ttlMs: 300000
+    })
+  ]);
 });
 ```
 
-**Timeouts**
+### 3. Async / Await and Promise Wrapper
+Convert callback methods to clean async/await functions:
+
 ```javascript
-// Increase timeout
-const config = new RClientConfig(tenantConfig, { timeoutMs: 5000 });
+function checkRateLimitAsync(client, resources, guards = [], metricsLabel = null) {
+  return new Promise((resolve, reject) => {
+    client.checkRateLimit(resources, guards, metricsLabel, (err, result) => {
+      if (err) return reject(err);
+      resolve(result);
+    });
+  });
+}
+
+// Usage in Express / Fastify / Koa / NestJS:
+async function handleRequest(req, res) {
+  const result = await checkRateLimitAsync(client, [
+    new ResourceRequest(`ip:${req.ip}`, 1000, 10, 1)
+  ]);
+
+  if (!result.success) {
+    return res.status(429).json({ error: 'Too Many Requests' });
+  }
+
+  return res.json({ status: 'ok' });
+}
 ```
 
-**Authentication Errors**
+### 4. High Availability & Custom Retry Policies
+Configure custom retry policies with fixed, linear, or exponential backoff:
+
 ```javascript
-// Verify tenant configuration
-console.log(`Tenant ID: ${config.tenant.keyId}`);
-console.log(`Auth method: ${config.tenant.authMethod}`);
+const { RequestPolicy, HaSchedule, createClient } = require('ratelimitly-client');
+
+const haPolicy = new RequestPolicy({
+  unitMs: 20,                                // Base scheduling quantum (ms)
+  replayCount: 2,                            // Max replay rounds
+  replayGap: HaSchedule.exponential(1, 2, 4), // Exponential growth: 1 -> 2 -> 4 units
+  finalReceiveUnits: 1,                      // Tail receive interval
+  completionDelivery: true                   // Broadcast result to missing servers
+});
+
+const client = createClient(process.env.RATELIMITLY_AUTH_KEY, null, {
+  requestPolicy: haPolicy,
+  dnsRefreshIntervalS: 300 // DNS SRV refresh interval
+});
 ```
 
-**No Servers Available**
+---
+
+## API Reference
+
+### `createClient(authKey, [dnsName], [options])`
+Creates and initializes an `RClient` instance.
+
+- **`authKey`** `(string)`: RateLimitly Bech32 API key (`rl-aes1...`, `rl-cookie1...`, `rl-none1...`).
+- **`dnsName`** `(string, optional)`: Override tenant discovery domain (defaults to `c-${keyId}.p0.ratelimitly.com`).
+- **`options`** `(object, optional)`:
+  - `requestPolicy` `(RequestPolicy)`: Custom HA retry/timeout policy.
+  - `dnsRefreshIntervalS` `(number)`: DNS SRV cache refresh interval in seconds (default: `300`).
+  - `steeringFeedback` `(boolean)`: Enable server port steering affinity (default: `false`).
+
+### `RClient` Methods
+- **`checkRateLimit(resources, [guards], [metricsLabel], callback)`**: Evaluates rate quotas and latency guards.
+- **`reportLatency(serviceLatencyBlocks, callback)`**: Asynchronously reports observed service latencies.
+- **`getServerStats()`**: Returns active server endpoints, stability records, and DNS refresh timestamps.
+
+### `ResourceRequest(bucketName, windowSizeMs, rateLimit, [tokensRequested])`
+- **`bucketName`** `(string)`: Logical name or identifier for the rate bucket.
+- **`windowSizeMs`** `(number)`: Sliding window length in milliseconds (e.g. `1000`, `60000`).
+- **`rateLimit`** `(number)`: Maximum allowed tokens within the window.
+- **`tokensRequested`** `(number, default: 1)`: Tokens requested by this operation.
+
+### `LatencyGuard(options)`
+- **`latencyTrackerName`** `(string)`: Identifier of the downstream service to track.
+- **`thresholdMs`** `(number)`: Maximum allowed latency before shedding requests.
+- **`ttlMs`** `(number)`: Expiration TTL for tracked latency samples.
+- **`maxSamples`** `(number, default: 32)`: Maximum moving samples.
+- **`bufferSize`** `(number, default: 20)`: Buffer size for sample calculations.
+- **`minSampleThreshold`** `(number, default: 5)`: Minimum samples required before activation.
+
+---
+
+## Bech32 API Key Codec
+
+The library includes a standalone encoder/decoder for RateLimitly's Bech32 key format:
+
 ```javascript
-// Check server discovery
-const stats = client.getServerStats();
-console.log(`Discovered servers: ${stats.servers}`);
+const { decodeApiKey, encodeApiKey, bytesToHex } = require('ratelimitly-client/api_key_codec');
+
+const decoded = decodeApiKey('rl-aes1qx2kk...');
+console.log({
+  authMethod: decoded.authMethod, // 'aes', 'cookie', or 'none'
+  keyId: decoded.keyId,           // BigInt (e.g. 4265246494029998997n)
+  quotas: decoded.quotas          // Embedded quota limits
+});
 ```
 
-For local development, point `RCLIENT_TARGET_HOST` at an SRV-enabled hostname such as `ratelimitly.local`
-and optionally set `RCLIENT_DNS_SERVER=127.0.0.1[:port]` if you are running a local resolver.
+---
 
-## NPM Integration
+## Examples Directory
 
-```bash
-# Install as dependency
-npm install
+Explore runnable examples in the [`examples/`](examples/) directory:
 
-# Run tests
-npm test
+- [`01_basic_rate_limiting.js`](examples/01_basic_rate_limiting.js) - Single-resource rate limiting.
+- [`02_multi_resource_atomic.js`](examples/02_multi_resource_atomic.js) - Multi-tier atomic rate checks.
+- [`03_latency_guards_and_reporting.js`](examples/03_latency_guards_and_reporting.js) - Downstream latency load shedding.
+- [`04_promise_async_await.js`](examples/04_promise_async_await.js) - Async/await wrappers.
+- [`05_high_availability_policy.js`](examples/05_high_availability_policy.js) - Custom HA retry schedules.
+- [`06_api_key_codec.js`](examples/06_api_key_codec.js) - API key encoding and decoding.
 
-# Run examples
-npm run example
-```
+---
 
-This JavaScript R-Client provides a **production-ready, modern interface** for integrating RateLimitly into Node.js applications with **async/await support** and **maximum performance**.
+## Security
+
+Please review [`SECURITY.md`](SECURITY.md) for our threat model, AES-256-GCM authentication details, and vulnerability disclosure process.
+
+---
+
+## Contributing
+
+Contributions are welcome! Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup and testing instructions.
+
+---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

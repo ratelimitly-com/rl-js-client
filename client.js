@@ -788,7 +788,7 @@ class WireProtocol {
                 }
             }
             const latencyTrackerName = guard ? guard.latencyTrackerName : null;
-            const passed = currentLatencyMs <= thresholdMs;
+            const passed = currentLatencyMs < thresholdMs;
             
             guardResults.push(new GuardResult(latencyTrackerName, thresholdMs, currentLatencyMs, passed));
         }
@@ -1455,9 +1455,19 @@ class RClient {
             metricsLabel = null;
         }
         
-        if (!callback) {
-            callback = () => {}; // No-op callback
+        if (typeof callback !== 'function') {
+            return new Promise((resolve, reject) => {
+                this._checkRateLimitInternal(resources, guards, metricsLabel, (error, result) => {
+                    if (error) reject(error);
+                    else resolve(result);
+                });
+            });
         }
+        
+        return this._checkRateLimitInternal(resources, guards, metricsLabel, callback);
+    }
+
+    _checkRateLimitInternal(resources, guards, metricsLabel, callback) {
         resources = resources || [];
         guards = guards || [];
         if (resources.length === 0 && guards.length === 0) {
@@ -1494,10 +1504,19 @@ class RClient {
             throw new Error('serviceLatencyBlocks must be an array of ServiceLatencyBlock instances');
         }
         
-        if (!callback) {
-            callback = () => {}; // No-op callback
+        if (typeof callback !== 'function') {
+            return new Promise((resolve, reject) => {
+                this._reportLatencyInternal(serviceLatencyBlocks, (error) => {
+                    if (error) reject(error);
+                    else resolve();
+                });
+            });
         }
         
+        return this._reportLatencyInternal(serviceLatencyBlocks, callback);
+    }
+
+    _reportLatencyInternal(serviceLatencyBlocks, callback) {
         const packet = WireProtocol.createLatencyReport(this.config.tenant, serviceLatencyBlocks);
         if (!packet) {
             callback(null);

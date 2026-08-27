@@ -250,6 +250,12 @@ export class RClient {
 
   checkRateLimit(
     resources: ResourceRequest[],
+    guards?: LatencyGuard[] | null,
+    metricsLabel?: string | null
+  ): Promise<RateLimitResult>;
+
+  checkRateLimit(
+    resources: ResourceRequest[],
     callback: (error: Error | null, result?: RateLimitResult) => void
   ): void;
 
@@ -265,6 +271,10 @@ export class RClient {
     metricsLabel: string | null | undefined,
     callback: (error: Error | null, result?: RateLimitResult) => void
   ): void;
+
+  reportLatency(
+    serviceLatencyBlocks: ServiceLatencyBlock[]
+  ): Promise<void>;
 
   reportLatency(
     serviceLatencyBlocks: ServiceLatencyBlock[],

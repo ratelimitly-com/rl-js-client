@@ -138,6 +138,7 @@ export class RateLimitResult {
   guardResults: GuardResult[];
   serverId: bigint | number | null;
   steeringFeedback: boolean;
+  requestId: string | null;
 }
 
 export type HaScheduleKind = 'fixed' | 'linear' | 'exponential';

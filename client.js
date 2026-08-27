@@ -148,12 +148,13 @@ class ResourceResult {
 }
 
 class RateLimitResult {
-    constructor(success, guardResults, resourceResults, serverId, steeringFeedback = false) {
+    constructor(success, guardResults, resourceResults, serverId, steeringFeedback = false, requestId = null) {
         this.success = success;
         this.guardResults = guardResults;
         this.resourceResults = resourceResults;
         this.serverId = serverId;
         this.steeringFeedback = steeringFeedback;
+        this.requestId = requestId;
     }
 }
 
@@ -1471,7 +1472,7 @@ class RClient {
         resources = resources || [];
         guards = guards || [];
         if (resources.length === 0 && guards.length === 0) {
-            callback(null, new RateLimitResult(true, [], [], 0));
+            callback(null, new RateLimitResult(true, [], [], 0, false, null));
             return;
         }
         const dedupTtlMs = this.config.requestPolicy.horizonMs(this.quotas.dedup_ttl_ms_max);
@@ -1489,12 +1490,16 @@ class RClient {
             if (error) return callback(error);
             const guardsPassed = parsed.guardResults.every((guard) => guard.passed);
             const resourcesGranted = parsed.resourceResults.every((resource) => resource.tokensDeficit === 0);
+            const reqIdStr = parsed.requestId
+                ? (Buffer.isBuffer(parsed.requestId) ? parsed.requestId.toString('hex') : String(parsed.requestId))
+                : null;
             callback(null, new RateLimitResult(
                 guardsPassed && resourcesGranted,
                 parsed.guardResults,
                 parsed.resourceResults,
                 parsed.serverId,
-                parsed.steeringFeedback
+                parsed.steeringFeedback,
+                reqIdStr
             ));
         });
     }

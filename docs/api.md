@@ -149,7 +149,7 @@ const { CanonicalIds } = require('ratelimitly-client');
 const bucketId = CanonicalIds.bucketId('login_endpoint', 60000, 100);
 
 // 16-byte Buffer latency tracker ID
-const trackerId = CanonicalIds.latencyTrackerId('db_read_replica', 30000, 100, 16, 5);
+const trackerId = CanonicalIds.latencyTrackerId('db_read_replica', 30000, 100, 5);
 ```
 
 ---

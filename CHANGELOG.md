@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.0.0] - 2026-08-29
+
+### Changed
+
+- **Breaking:** removed per-tracker `bufferSize` from latency guards, latency
+  reports, and canonical latency-tracker identity.
+- Encoded 36-byte guard blocks and 32-byte latency-report blocks for Ratelimitly
+  wire protocol version 2.
+- Changed the latency-tracker identity domain to
+  `ratelimitly.latency-tracker.v2\0`; resource bucket identity remains v1.
+
 ## [1.0.1] - 2026-08-25
 
 ### Added

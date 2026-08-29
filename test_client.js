@@ -57,12 +57,12 @@ function testWireProtocol(callback) {
     );
     assert(
         CanonicalIds.latencyTrackerId('inventory-backend', 10000, 100, 5).toString('hex')
-            === '04283c08fe9f735566898b6982eac6c7',
+            === '6a17d07a424568304e50d28540f76e67',
         'Canonical inventory latency-tracker ID should match the central vector'
     );
     assert(
         CanonicalIds.latencyTrackerId('café', 60000, 200, 3).toString('hex')
-            === '8dece110edb102594ddde5bf4805af6b',
+            === '0f04bcd0fa9d655ca40dd204f50196f7',
         'Canonical UTF-8 latency-tracker ID should match the central vector'
     );
     assert(
@@ -71,7 +71,7 @@ function testWireProtocol(callback) {
             0xFFFF_FFFF,
             0xFFFF_FFFF,
             0xFFFF_FFFF
-        ).toString('hex') === 'd7f118ffa4eebc99fdfe8b221f37a1f2',
+        ).toString('hex') === '2944d00ab0f1829a4d598d47f32fb0fa',
         'Canonical embedded-NUL latency-tracker ID should match the central vector'
     );
     
@@ -91,7 +91,7 @@ function testWireProtocol(callback) {
     assert(packet.length > 0, 'Packet should not be empty');
     assert(packet.readUInt16LE(0) === 0x4C52, 'Should start with tenant TLV');
     assert(
-        packet.subarray(56, 72).toString('hex') === '04283c08fe9f735566898b6982eac6c7',
+        packet.subarray(56, 72).toString('hex') === '6a17d07a424568304e50d28540f76e67',
         'Guard should carry the canonical latency-tracker ID'
     );
     assert(
@@ -115,7 +115,7 @@ function testWireProtocol(callback) {
     assert(latencyPacket.readUInt16LE(46) === 44, 'One-service latency PDU should be 44 bytes');
     assert(latencyPacket.readUInt16LE(52) === 1, 'Latency report should contain one report block');
     assert(
-        latencyPacket.subarray(56, 72).toString('hex') === '04283c08fe9f735566898b6982eac6c7',
+        latencyPacket.subarray(56, 72).toString('hex') === '6a17d07a424568304e50d28540f76e67',
         'Latency report should use the same canonical tracker ID as the guard'
     );
     assert(latencyPacket.readUInt32LE(84) === 85, 'Observed latency should end the 32-byte report block');

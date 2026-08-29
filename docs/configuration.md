@@ -17,7 +17,7 @@ const client = createClient(process.env.RATELIMITLY_AUTH_KEY);
 | `rate_buckets_max` | Maximum active buckets permitted. |
 | `latency_services_max` | Maximum latency trackers monitored. |
 | `metrics_labels_max` | Maximum metrics labels accepted. |
-| `latency_buffer_size_max` | Maximum sample buffer size for latency guards. |
+| `latency_buffer_size_max` | Server-side inline point capacity allocated for every latency-tracker slot; it is not a guard or report field. |
 | `dedup_ttl_ms_max` | Maximum deduplication TTL / horizon duration in ms. |
 | `rate_window_size_ms_max` | Maximum sliding window duration in ms. |
 

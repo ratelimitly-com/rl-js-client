@@ -58,7 +58,7 @@ All binary integers are little-endian. Datagram sizes are capped at 1,200 bytes 
 |   0x04..0x07: Dedup TTL / Horizon (uint32 ms)               |
 |   0x08..0x09: Guard Count (uint16)                          |
 |   0x0A..0x0B: Resource Count (uint16)                       |
-|   ... Guard Blocks (40 bytes each)                          |
+|   ... Guard Blocks (36 bytes each)                          |
 |   ... Resource Blocks (28 bytes each)                       |
 |   ... Optional Metrics Label TLV (Type 0x4C4D)              |
 +-------------------------------------------------------------+

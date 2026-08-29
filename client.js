@@ -29,7 +29,7 @@ const PDU_RATE_RESPONSE = 0x5252;
 const PDU_LATENCY_REPORT = 0x524C;
 const LATENCY_REPORT_BLOCK_SIZE = 32;
 const RESOURCE_ID_DOMAIN = Buffer.from('ratelimitly.resource.v1\0', 'ascii');
-const LATENCY_TRACKER_ID_DOMAIN = Buffer.from('ratelimitly.latency-tracker.v1\0', 'ascii');
+const LATENCY_TRACKER_ID_DOMAIN = Buffer.from('ratelimitly.latency-tracker.v2\0', 'ascii');
 const SERVER_ID_EPOCH_S_2025 = 1735689600;
 const SERVER_ID_TIME_SHIFT = 23;
 

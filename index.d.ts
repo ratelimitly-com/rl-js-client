@@ -79,7 +79,6 @@ export interface LatencyGuardOptions {
   thresholdMs: number;
   ttlMs: number;
   maxSamples?: number;
-  bufferSize?: number;
   minSampleThreshold?: number;
 }
 
@@ -89,7 +88,6 @@ export class LatencyGuard {
   thresholdMs: number;
   ttlMs: number;
   maxSamples: number;
-  bufferSize: number;
   minSampleThreshold: number;
 
   constructor(config: LatencyGuardOptions);
@@ -101,7 +99,6 @@ export interface ServiceLatencyBlockOptions {
   observedLatency: number;
   ttlMs: number;
   maxSamples?: number;
-  bufferSize?: number;
   minSampleThreshold?: number;
 }
 
@@ -111,7 +108,6 @@ export class ServiceLatencyBlock {
   observedLatency: number;
   ttlMs: number;
   maxSamples: number;
-  bufferSize: number;
   minSampleThreshold: number;
 
   constructor(config: ServiceLatencyBlockOptions);
@@ -231,7 +227,6 @@ export class CanonicalIds {
     name: string | Buffer,
     ttlMs: number,
     maxSamples: number,
-    bufferSize: number,
     minSampleThreshold: number
   ): Buffer;
 }

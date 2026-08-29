@@ -144,7 +144,6 @@ function latencyProbeShape(testNamespace) {
         latencyTrackerName: scopedName(testNamespace, "latency-service"),
         // One slot makes the real sample replace the speculative admission value.
         maxSamples: 1,
-        bufferSize: 1,
         minSampleThreshold: 1,
         metricsLabel: "production-smoke-latency-probe"
     };
@@ -157,7 +156,6 @@ function rateProbeShape(testNamespace) {
         latencyTrackerName: scopedName(testNamespace, "rate-service"),
         // Keep two speculative samples below activation so only rate can deny.
         maxSamples: 3,
-        bufferSize: 3,
         minSampleThreshold: 3,
         metricsLabel: "production-smoke-rate-probe"
     };
@@ -169,7 +167,6 @@ function guardFor(shape) {
         thresholdMs: LATENCY_THRESHOLD_MS,
         ttlMs: LATENCY_TTL_MS,
         maxSamples: shape.maxSamples,
-        bufferSize: shape.bufferSize,
         minSampleThreshold: shape.minSampleThreshold
     });
 }
@@ -184,7 +181,6 @@ function latencyBlockFor(shape, observedLatency) {
         observedLatency,
         ttlMs: LATENCY_TTL_MS,
         maxSamples: shape.maxSamples,
-        bufferSize: shape.bufferSize,
         minSampleThreshold: shape.minSampleThreshold
     });
 }

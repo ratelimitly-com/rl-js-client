@@ -17,7 +17,6 @@ function test() {
         thresholdMs: 100,
         ttlMs: 10000,
         maxSamples: 100,
-        bufferSize: 20,
         minSampleThreshold: 8
     })];
     
@@ -42,7 +41,6 @@ function test() {
             observedLatency: 85.5,
             ttlMs: 10000,
             maxSamples: 100,
-            bufferSize: 20,
             minSampleThreshold: 8
         })], (latencyError) => {
             if (latencyError) {

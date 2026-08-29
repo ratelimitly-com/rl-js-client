@@ -85,7 +85,6 @@ new LatencyGuard({
   thresholdMs: 50,
   ttlMs: 60000,
   maxSamples: 100,
-  bufferSize: 16,
   minSampleThreshold: 5
 })
 ```
@@ -94,7 +93,6 @@ new LatencyGuard({
 - **`thresholdMs`** (`number`): SLA threshold in ms (guard passes when `currentLatency < thresholdMs`).
 - **`ttlMs`** (`number`): Rolling window duration in ms.
 - **`maxSamples`** (`number`): Sample ceiling.
-- **`bufferSize`** (`number`): Reservoir capacity (bounded by credential quota `latency_buffer_size_max`).
 - **`minSampleThreshold`** (`number`): Minimum samples required before shedding traffic.
 
 ### `ServiceLatencyBlock` & `client.reportLatency(blocks, callback?)`
@@ -107,7 +105,6 @@ const block = new ServiceLatencyBlock({
   observedLatency: 42, // milliseconds
   ttlMs: 60000,
   maxSamples: 100,
-  bufferSize: 16,
   minSampleThreshold: 5
 });
 

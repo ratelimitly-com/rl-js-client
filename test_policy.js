@@ -40,23 +40,6 @@ assert.throws(
   ),
   /rate_window_size_ms_max/
 );
-assert.throws(
-  () => WireProtocol.createRateRequest(
-    tenant,
-    [],
-    [new LatencyGuard({
-      latencyTrackerName: "service",
-      thresholdMs: 10,
-      ttlMs: 100,
-      maxSamples: 10,
-      bufferSize: 2,
-      minSampleThreshold: 1,
-    })],
-    null,
-    9
-  ),
-  /latency_buffer_size_max/
-);
 
 let emptyResult = null;
 client.checkRateLimit([], [], (error, result) => {

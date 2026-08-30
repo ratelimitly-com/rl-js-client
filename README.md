@@ -109,7 +109,6 @@ const guards = [
     thresholdMs: 150,       // Max acceptable downstream latency
     ttlMs: 300000,          // Sample window TTL (5 minutes)
     maxSamples: 32,         // Max moving window samples
-    bufferSize: 20,         // Sample buffer size
     minSampleThreshold: 5   // Minimum samples before guard activates
   })
 ];
@@ -213,7 +212,6 @@ Creates and initializes an `RClient` instance.
 - **`thresholdMs`** `(number)`: Maximum allowed latency before shedding requests.
 - **`ttlMs`** `(number)`: Expiration TTL for tracked latency samples.
 - **`maxSamples`** `(number, default: 32)`: Maximum moving samples.
-- **`bufferSize`** `(number, default: 20)`: Buffer size for sample calculations.
 - **`minSampleThreshold`** `(number, default: 5)`: Minimum samples required before activation.
 
 ---

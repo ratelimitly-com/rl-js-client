@@ -87,7 +87,6 @@ async function exampleWithGuards() {
             thresholdMs: 100.0,
             ttlMs: 10000,
             maxSamples: 100,
-            bufferSize: 20,
             minSampleThreshold: 8
         }),
         new LatencyGuard({
@@ -95,7 +94,6 @@ async function exampleWithGuards() {
             thresholdMs: 10.0,
             ttlMs: 10000,
             maxSamples: 100,
-            bufferSize: 20,
             minSampleThreshold: 8
         })
     ];
@@ -133,7 +131,6 @@ async function exampleWithGuards() {
                 observedLatency: dbLatency,
                 ttlMs: 10000,
                 maxSamples: 100,
-                bufferSize: 20,
                 minSampleThreshold: 8
             });
             await reportLatencyAsync(client, [dbBlock]);
@@ -147,7 +144,6 @@ async function exampleWithGuards() {
                 observedLatency: cacheLatency,
                 ttlMs: 10000,
                 maxSamples: 100,
-                bufferSize: 20,
                 minSampleThreshold: 8
             });
             await reportLatencyAsync(client, [cacheBlock]);
@@ -206,7 +202,6 @@ async function rateLimitedOperation(client, bucketName, windowMs = 60000, limit 
             observedLatency: latency,
             ttlMs: 10000,
             maxSamples: 100,
-            bufferSize: 20,
             minSampleThreshold: 8
         });
         await reportLatencyAsync(client, [block]);
@@ -285,7 +280,6 @@ async function exampleBulkOperations() {
             thresholdMs: 50.0,
             ttlMs: 10000,
             maxSamples: 100,
-            bufferSize: 20,
             minSampleThreshold: 8
         }),
         new LatencyGuard({
@@ -293,7 +287,6 @@ async function exampleBulkOperations() {
             thresholdMs: 100.0,
             ttlMs: 10000,
             maxSamples: 100,
-            bufferSize: 20,
             minSampleThreshold: 8
         }),
     ];
@@ -324,7 +317,6 @@ async function exampleBulkOperations() {
                     observedLatency: 45.0,
                     ttlMs: 10000,
                     maxSamples: 100,
-                    bufferSize: 20,
                     minSampleThreshold: 8
                 }),
                 new ServiceLatencyBlock({
@@ -332,7 +324,6 @@ async function exampleBulkOperations() {
                     observedLatency: 85.0,
                     ttlMs: 10000,
                     maxSamples: 100,
-                    bufferSize: 20,
                     minSampleThreshold: 8
                 })
             ]);

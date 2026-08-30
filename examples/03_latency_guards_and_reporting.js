@@ -33,7 +33,6 @@ const guards = [
     thresholdMs: 150,       // Max acceptable latency (150ms)
     ttlMs: 300000,          // Sample window TTL (5 minutes)
     maxSamples: 32,         // Max moving window samples
-    bufferSize: 20,         // Reporting sample buffer size
     minSampleThreshold: 5   // Minimum samples before guard activates
   })
 ];
@@ -71,7 +70,6 @@ client.checkRateLimit(resources, guards, 'demo.checkout.flow', async (err, resul
     observedLatency: observedLatencyMs,
     ttlMs: 300000,
     maxSamples: 32,
-    bufferSize: 20,
     minSampleThreshold: 5
   });
 

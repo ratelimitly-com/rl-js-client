@@ -27,9 +27,9 @@ const TLV_METRICS_LABEL = 0x4C4D;
 const PDU_RATE_REQUEST = 0x5452;
 const PDU_RATE_RESPONSE = 0x5252;
 const PDU_LATENCY_REPORT = 0x524C;
-const LATENCY_REPORT_BLOCK_SIZE = 36;
+const LATENCY_REPORT_BLOCK_SIZE = 32;
 const RESOURCE_ID_DOMAIN = Buffer.from('ratelimitly.resource.v1\0', 'ascii');
-const LATENCY_TRACKER_ID_DOMAIN = Buffer.from('ratelimitly.latency-tracker.v1\0', 'ascii');
+const LATENCY_TRACKER_ID_DOMAIN = Buffer.from('ratelimitly.latency-tracker.v2\0', 'ascii');
 const SERVER_ID_EPOCH_S_2025 = 1735689600;
 const SERVER_ID_TIME_SHIFT = 23;
 
@@ -44,11 +44,11 @@ class CanonicalIds {
         return this._derive(RESOURCE_ID_DOMAIN, bucketName, [windowSizeMs, rateLimit]);
     }
 
-    static latencyTrackerId(latencyTrackerName, ttlMs, maxSamples, bufferSize, minSampleThreshold) {
+    static latencyTrackerId(latencyTrackerName, ttlMs, maxSamples, minSampleThreshold) {
         return this._derive(
             LATENCY_TRACKER_ID_DOMAIN,
             latencyTrackerName,
-            [ttlMs, maxSamples, bufferSize, minSampleThreshold]
+            [ttlMs, maxSamples, minSampleThreshold]
         );
     }
 
@@ -91,7 +91,7 @@ class LatencyGuard {
             throw new Error('LatencyGuard config object is required');
         }
         
-        const required = ['latencyTrackerName', 'thresholdMs', 'ttlMs', 'maxSamples', 'bufferSize', 'minSampleThreshold'];
+        const required = ['latencyTrackerName', 'thresholdMs', 'ttlMs', 'maxSamples', 'minSampleThreshold'];
         for (const param of required) {
             if (config[param] === undefined || config[param] === null) {
                 throw new Error(`LatencyGuard config.${param} is required`);
@@ -102,7 +102,6 @@ class LatencyGuard {
         this.thresholdMs = config.thresholdMs;
         this.ttlMs = config.ttlMs;
         this.maxSamples = config.maxSamples;
-        this.bufferSize = config.bufferSize;
         this.minSampleThreshold = config.minSampleThreshold;
     }
 }
@@ -114,7 +113,7 @@ class ServiceLatencyBlock {
             throw new Error('ServiceLatencyBlock config object is required');
         }
         
-        const required = ['latencyTrackerName', 'observedLatency', 'ttlMs', 'maxSamples', 'bufferSize', 'minSampleThreshold'];
+        const required = ['latencyTrackerName', 'observedLatency', 'ttlMs', 'maxSamples', 'minSampleThreshold'];
         for (const param of required) {
             if (config[param] === undefined || config[param] === null) {
                 throw new Error(`ServiceLatencyBlock config.${param} is required`);
@@ -125,7 +124,6 @@ class ServiceLatencyBlock {
         this.observedLatency = config.observedLatency;
         this.ttlMs = config.ttlMs;
         this.maxSamples = config.maxSamples;
-        this.bufferSize = config.bufferSize;
         this.minSampleThreshold = config.minSampleThreshold;
     }
 }
@@ -395,26 +393,6 @@ class WireProtocol {
         return decoded.quotas;
     }
 
-    static _latencyBufferSizeMax(tenantConfig) {
-        const quotas = this._tenantQuotas(tenantConfig);
-        return quotas ? quotas.latency_buffer_size_max : null;
-    }
-
-    static _validateLatencyGuards(tenantConfig, guards) {
-        const limit = this._latencyBufferSizeMax(tenantConfig);
-        if (limit === null || limit === undefined) {
-            return;
-        }
-
-        for (const guard of guards) {
-            if (guard.bufferSize > limit) {
-                throw new ProtocolError(
-                    `Latency guard '${guard.latencyTrackerName}' bufferSize ${guard.bufferSize} exceeds tenant quota latency_buffer_size_max ${limit}`
-                );
-            }
-        }
-    }
-
     static _validateResourceWindows(tenantConfig, resources) {
         const quotas = this._tenantQuotas(tenantConfig);
         const limit = quotas.rate_window_size_ms_max;
@@ -425,14 +403,6 @@ class WireProtocol {
                 );
             }
         }
-    }
-
-    static _filterLatencyReports(tenantConfig, reports) {
-        const limit = this._latencyBufferSizeMax(tenantConfig);
-        if (limit === null || limit === undefined) {
-            return reports;
-        }
-        return reports.filter((report) => report.bufferSize <= limit);
     }
 
     static _requireDecodedAuth(tenantConfig, expectedMethod) {
@@ -458,7 +428,6 @@ class WireProtocol {
     }
     
     static createRateRequest(tenantConfig, resources, guards = [], metricsLabel = null, dedupTtlMs = 300) {
-        this._validateLatencyGuards(tenantConfig, guards);
         this._validateResourceWindows(tenantConfig, resources);
         const quotas = this._tenantQuotas(tenantConfig);
         if (!Number.isInteger(dedupTtlMs) || dedupTtlMs <= 0 ||
@@ -497,7 +466,7 @@ class WireProtocol {
             metricsLabelTlvSize = 4 + paddedBodySize; // TLV header + padded body
         }
         
-        const pduBodySize = 4 + guards.length * 40 + resources.length * 28 + metricsLabelTlvSize; // guard_count + resource_count + blocks + optional TLVs
+        const pduBodySize = 4 + guards.length * 36 + resources.length * 28 + metricsLabelTlvSize; // guard_count + resource_count + blocks + optional TLVs
         const pduSize = 8 + pduBodySize; // PDU header (8 bytes) + body
         const pduBuffer = Buffer.alloc(pduSize);
         let pduPos = 0;
@@ -517,13 +486,11 @@ class WireProtocol {
                 guard.latencyTrackerName,
                 guard.ttlMs,
                 guard.maxSamples,
-                guard.bufferSize,
                 guard.minSampleThreshold
             );
             latencyTrackerId.copy(pduBuffer, pduPos); pduPos += 16;
             pduBuffer.writeUInt32LE(guard.ttlMs, pduPos); pduPos += 4;
             pduBuffer.writeUInt32LE(guard.maxSamples, pduPos); pduPos += 4;
-            pduBuffer.writeUInt32LE(guard.bufferSize, pduPos); pduPos += 4;
             pduBuffer.writeUInt32LE(guard.minSampleThreshold, pduPos); pduPos += 4;
             pduBuffer.writeUInt32LE(Math.floor(guard.thresholdMs), pduPos); pduPos += 4;
             pduBuffer.writeUInt32LE(0, pduPos); pduPos += 4; // current_latency
@@ -590,8 +557,7 @@ class WireProtocol {
     }
     
     static createLatencyReport(tenantConfig, serviceLatencyBlocks) {
-        const filteredBlocks = this._filterLatencyReports(tenantConfig, serviceLatencyBlocks);
-        if (filteredBlocks.length === 0) {
+        if (!serviceLatencyBlocks || serviceLatencyBlocks.length === 0) {
             return null;
         }
 
@@ -614,7 +580,7 @@ class WireProtocol {
         buffer.writeUInt8(0, pos); pos += 1;  // padding byte 2
         
         // Build PDU first
-        const pduSize = 12 + filteredBlocks.length * LATENCY_REPORT_BLOCK_SIZE;
+        const pduSize = 12 + serviceLatencyBlocks.length * LATENCY_REPORT_BLOCK_SIZE;
         const pduBuffer = Buffer.alloc(pduSize);
         let pduPos = 0;
         
@@ -624,22 +590,20 @@ class WireProtocol {
         pduBuffer.writeUInt32LE(0, pduPos); pduPos += 4; // reserved
         
         // Latency report counts
-        pduBuffer.writeUInt16LE(filteredBlocks.length, pduPos); pduPos += 2; // service_count
+        pduBuffer.writeUInt16LE(serviceLatencyBlocks.length, pduPos); pduPos += 2; // service_count
         pduBuffer.writeUInt16LE(0, pduPos); pduPos += 2; // padding
         
-        // Latency report blocks (36 bytes each)
-        for (const block of filteredBlocks) {
+        // Latency report blocks (32 bytes each)
+        for (const block of serviceLatencyBlocks) {
             const latencyTrackerId = CanonicalIds.latencyTrackerId(
                 block.latencyTrackerName,
                 block.ttlMs,
                 block.maxSamples,
-                block.bufferSize,
                 block.minSampleThreshold
             );
             latencyTrackerId.copy(pduBuffer, pduPos); pduPos += 16;
             pduBuffer.writeUInt32LE(block.ttlMs, pduPos); pduPos += 4;
             pduBuffer.writeUInt32LE(block.maxSamples, pduPos); pduPos += 4;
-            pduBuffer.writeUInt32LE(block.bufferSize, pduPos); pduPos += 4;
             pduBuffer.writeUInt32LE(block.minSampleThreshold, pduPos); pduPos += 4;
             pduBuffer.writeUInt32LE(Math.floor(block.observedLatency), pduPos); pduPos += 4;
         }
@@ -770,7 +734,6 @@ class WireProtocol {
             const latencyTrackerId = pduData.subarray(pos, pos + 16); pos += 16;
             const ttlMs = pduData.readUInt32LE(pos); pos += 4;
             const maxSamples = pduData.readUInt32LE(pos); pos += 4;
-            const bufferSize = pduData.readUInt32LE(pos); pos += 4;
             const minSampleThreshold = pduData.readUInt32LE(pos); pos += 4;
             const thresholdMs = pduData.readUInt32LE(pos); pos += 4;
             const currentLatencyMs = pduData.readUInt32LE(pos); pos += 4;
@@ -781,7 +744,6 @@ class WireProtocol {
                     guard.latencyTrackerName,
                     guard.ttlMs,
                     guard.maxSamples,
-                    guard.bufferSize,
                     guard.minSampleThreshold
                 );
                 if (!latencyTrackerId.equals(expectedId)) {

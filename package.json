@@ -1,7 +1,7 @@
 {
   "name": "ratelimitly-client",
   "version": "2.0.0",
-  "description": "RateLimitly JavaScript R-Client for centralized rate limiting and load shedding",
+  "description": "Ratelimitly JavaScript client - centralized rate limiting and latency-based load shedding over UDP",
   "main": "client.js",
   "types": "index.d.ts",
   "exports": {
@@ -54,5 +54,5 @@
   "bugs": {
     "url": "https://github.com/ratelimitly-com/rl-js-client/issues"
   },
-  "homepage": "https://github.com/ratelimitly-com/rl-js-client#readme"
+  "homepage": "https://ratelimitly.com"
 }

@@ -6,7 +6,20 @@
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue.svg)](package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Official Node.js client library for **RateLimitly** — high-performance, centralized distributed rate limiting and latency-based load shedding over low-latency UDP wire protocol.
+Official Node.js client library for **[Ratelimitly](https://ratelimitly.com)** — high-performance, centralized distributed rate limiting and latency-based load shedding over a low-latency UDP wire protocol.
+
+## What is Ratelimitly?
+
+[Ratelimitly](https://ratelimitly.com) is rate limiting and load shedding as a service. Your
+application asks a nearby Ratelimitly server for an admit/deny decision over a single UDP
+round trip: **rate limits** enforce per-account and per-resource quotas, and **latency
+guards** shed traffic automatically when a protected resource (a database, an upstream
+service) slows down. Servers are discovered through DNS SRV records tied to your API key,
+so there is nothing to configure but the key.
+
+- Website: <https://ratelimitly.com>
+- Documentation: <https://docs.ratelimitly.com>
+- This client on npm: <https://www.npmjs.com/package/ratelimitly-client>
 
 ---
 
@@ -25,14 +38,20 @@ Official Node.js client library for **RateLimitly** — high-performance, centra
 
 ## Architecture Overview
 
-```mermaid
-flowchart LR
-    App["Node.js Application"] -->|checkRateLimit| Client["RClient (ratelimitly-client)"]
-    Client -->|Zero-Config DNS SRV| DNS["DNS Discovery (c-${keyId}.p0.ratelimitly.com)"]
-    Client -->|UDP Wire Protocol / AES-256-GCM| NodeA["RateLimitly Node A"]
-    Client -->|UDP Wire Protocol / AES-256-GCM| NodeB["RateLimitly Node B"]
-    NodeA -->|Admit / Deny Decision| Client
-    Client -->|Result| App
+<!-- npm does not render mermaid, so this stays a plain-text diagram. -->
+
+```text
+Node.js Application
+      |  checkRateLimit()
+      v
+RClient (ratelimitly-client)
+      |  zero-config DNS SRV discovery
+      |  (_ratelimitly._udp.c-<keyId>.p0.ratelimitly.com)
+      v
+Ratelimitly Node A / Node B          <- UDP wire protocol, AES-256-GCM
+      |
+      v
+Admit / Deny decision  ->  back to your application
 ```
 
 ---

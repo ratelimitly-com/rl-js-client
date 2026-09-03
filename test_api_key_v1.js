@@ -50,9 +50,21 @@ for (const invalid of [
   "rl-aes1qgpqqqqqqqqqqqqzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqghjmuhcchgqf0",
   "rl-aes1qyysqqqqqqqqqqqfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyqqqqqqurys6m",
   "rl-aes1qyysqqqqqqqqqqqfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyvsqzqqs45cew",
-  "rl-aes1qvqqqqqqqqqqqqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqemrljn",
 ]) {
   assert.throws(() => decodeApiKey(invalid));
 }
+
+// legacy_unversioned_aes: a well-formed bech32 string whose decoded payload
+// is the wrong length. It exists to prove decodeApiKey rejects that with
+// the payload-length check, not with an earlier, unrelated check. A copy of
+// this vector that is even one character short of rl-c-client's
+// (tests/fixtures/api_key_v1_test_vectors.h) still throws, but from bech32
+// checksum validation instead -- which passes the assert.throws() above for
+// the wrong reason and proves nothing about the check this vector targets.
+const legacyUnversionedAes =
+  "rl-aes1qvqqqqqqqqqqqqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqemrljn";
+assert.throws(() => decodeApiKey(legacyUnversionedAes), {
+  message: /^invalid rl-aes payload length: expected 45, got \d+$/,
+});
 
 console.log("API-key v1 conformance tests passed");

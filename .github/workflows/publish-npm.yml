@@ -49,6 +49,9 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Install latest npm with OIDC Trusted Publishing support
+        run: npm install -g npm@latest
+
       - name: Download the exact GitHub release assets
         shell: bash
         run: |

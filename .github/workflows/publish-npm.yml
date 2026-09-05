@@ -1,0 +1,167 @@
+name: publish-npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing GitHub release version to publish, without the v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-npm-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish verified GitHub release to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Require the default branch and a numeric version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "npm publishing must be dispatched from main" >&2
+            exit 1
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "version must be numeric MAJOR.MINOR.PATCH without a v prefix" >&2
+            exit 1
+          fi
+
+      - name: Check out the released tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/v${{ inputs.version }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download the exact GitHub release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          release_state="$(
+            gh release view "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json isDraft,isPrerelease \
+              --jq 'if .isDraft then "draft" elif .isPrerelease then "prerelease" else "published" end'
+          )"
+          if [[ "$release_state" != published ]]; then
+            echo "$tag is not a published, non-prerelease GitHub release" >&2
+            exit 1
+          fi
+          mkdir dist
+          gh release download "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir dist
+
+      - name: Verify the complete distribution set and metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('crypto');
+          const { execSync } = require('child_process');
+
+          const version = process.env.VERSION;
+          if (!/^[0-9]+\.[0-9]+\.[0-9]+$/.test(version)) {
+            throw new Error(`invalid VERSION: ${version}`);
+          }
+
+          const root = path.resolve('dist');
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          if (pkg.name !== 'ratelimitly-client' || pkg.version !== version) {
+            throw new Error(`the released tag's package.json does not match ratelimitly-client ${version}`);
+          }
+
+          const slug = pkg.name.replace(/^@/, '').replace(/\//g, '-');
+          const tarballName = `${slug}-${version}.tgz`;
+          const expectedFiles = new Set(['SHA256SUMS', tarballName]);
+          const foundFiles = new Set(fs.readdirSync(root));
+
+          if (foundFiles.size !== expectedFiles.size || ![...expectedFiles].every(f => foundFiles.has(f))) {
+            throw new Error(`unexpected GitHub release assets: expected ${[...expectedFiles].sort().join(', ')}, found ${[...foundFiles].sort().join(', ')}`);
+          }
+
+          const checksums = {};
+          const sumsContent = fs.readFileSync(path.join(root, 'SHA256SUMS'), 'ascii');
+          for (const line of sumsContent.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            const match = /^([0-9a-f]{64})\s+([^/]+)$/.exec(trimmed);
+            if (!match) {
+              throw new Error(`invalid SHA256SUMS line: "${trimmed}"`);
+            }
+            const [, digest, name] = match;
+            if (checksums[name]) {
+              throw new Error(`duplicate checksum for ${name}`);
+            }
+            checksums[name] = digest;
+          }
+
+          if (!checksums[tarballName]) {
+            throw new Error(`SHA256SUMS does not contain ${tarballName}`);
+          }
+
+          for (const [name, expectedDigest] of Object.entries(checksums)) {
+            const filePath = path.join(root, name);
+            const actualDigest = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+            if (actualDigest !== expectedDigest) {
+              throw new Error(`${name} has SHA-256 ${actualDigest}, expected ${expectedDigest}`);
+            }
+          }
+
+          // Verify tarball contents
+          const tarListing = execSync(`tar -tzf "${path.join(root, tarballName)}"`).toString('utf8').split('\n').filter(Boolean);
+          if (!tarListing.includes('package/package.json')) {
+            throw new Error(`${tarballName} missing package/package.json`);
+          }
+          if (!tarListing.includes(`package/${pkg.main}`)) {
+            throw new Error(`${tarballName} missing package/${pkg.main}`);
+          }
+
+          console.log(`verified ratelimitly-client ${version} tarball`);
+          for (const name of Object.keys(checksums).sort()) {
+            console.log(`${checksums[name]}  ${name}`);
+          }
+          NODE
+
+      - name: Stage verified tarball for publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACKAGE_NAME="$(node -p 'require("./package.json").name')"
+          SLUG="$(printf '%s' "$PACKAGE_NAME" | sed 's|^@||; s|/|-|g')"
+          TARBALL="${SLUG}-${VERSION}.tgz"
+          mkdir publish-dist
+          cp "dist/$TARBALL" "publish-dist/$TARBALL"
+
+      - name: Publish package to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN || secrets.NODE_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          PACKAGE_NAME="$(node -p 'require("./package.json").name')"
+          SLUG="$(printf '%s' "$PACKAGE_NAME" | sed 's|^@||; s|/|-|g')"
+          TARBALL="${SLUG}-${VERSION}.tgz"
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "NODE_AUTH_TOKEN / NPM_TOKEN secret is not set" >&2
+            exit 1
+          fi
+          npm publish "publish-dist/$TARBALL" --access public

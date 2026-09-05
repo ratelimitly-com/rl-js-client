@@ -1,6 +1,6 @@
 {
   "name": "ratelimitly-client",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Ratelimitly JavaScript client - centralized rate limiting and latency-based load shedding over UDP",
   "main": "client.js",
   "types": "index.d.ts",

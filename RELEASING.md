@@ -16,10 +16,13 @@ numeric version, it downloads that version's existing GitHub release, verifies
 
 ## Authentication and setup
 
-npm publishing uses an authentication token stored as a GitHub Actions secret:
+npm publishing uses npm Trusted Publishing via GitHub Actions OpenID Connect (OIDC) with provenance attestations:
 
-- Secret name: `NPM_TOKEN` (or `NODE_AUTH_TOKEN`)
-- Permission: Automation token with publish rights for `ratelimitly-client`
+- Publisher: GitHub Actions
+- Repository: `ratelimitly-com/rl-js-client`
+- Workflow: `publish-npm.yml`
+
+Alternatively, a legacy automation token can be configured in GitHub Actions secrets as `NPM_TOKEN` (or `NODE_AUTH_TOKEN`). When `NPM_TOKEN` is not set, the workflow publishes via OIDC Trusted Publishing.
 
 ## Publish an existing release
 

@@ -163,8 +163,8 @@ jobs:
           TARBALL="${SLUG}-${VERSION}.tgz"
           if [[ -n "${NODE_AUTH_TOKEN:-}" ]]; then
             echo "Publishing to npm using authentication token..."
-            npm publish "publish-dist/$TARBALL" --access public
+            npm publish "./publish-dist/$TARBALL" --access public
           else
             echo "Publishing to npm using OIDC Trusted Publishing with provenance..."
-            npm publish "publish-dist/$TARBALL" --access public --provenance
+            npm publish "./publish-dist/$TARBALL" --access public --provenance
           fi

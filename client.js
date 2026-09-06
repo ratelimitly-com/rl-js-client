@@ -19,6 +19,7 @@ const {
 } = require('./steering');
 
 // Protocol Constants
+const MAX_DATAGRAM_SIZE = 1200;
 const TLV_TENANT = 0x4C52;
 const TLV_AUTH_NONE = 0x414E;
 const TLV_AUTH_COOKIE = 0x4143;
@@ -438,7 +439,38 @@ class WireProtocol {
         }
         const effectiveDedupTtlMs = dedupTtlMs;
 
-        const buffer = Buffer.alloc(1200);
+        // Build PDU first for AES encryption - correct structure per spec
+        let metricsLabelBytes = null;
+        let metricsLabelTlvSize = 0;
+        if (metricsLabel) {
+            metricsLabelBytes = Buffer.from(metricsLabel, 'utf-8');
+            const bodySize = 2 + metricsLabelBytes.length; // str_length + label data
+            const paddedBodySize = Math.ceil(bodySize / 4) * 4; // Round up to 4-byte boundary
+            metricsLabelTlvSize = 4 + paddedBodySize; // TLV header + padded body
+        }
+        
+        const pduBodySize = 4 + guards.length * 36 + resources.length * 28 + metricsLabelTlvSize; // guard_count + resource_count + blocks + optional TLVs
+        const pduSize = 8 + pduBodySize; // PDU header (8 bytes) + body
+
+        let authHeaderSize;
+        if (tenantConfig.authMethod === AuthMethod.NONE) {
+            authHeaderSize = 4;
+        } else if (tenantConfig.authMethod === AuthMethod.COOKIE) {
+            authHeaderSize = 36;
+        } else if (tenantConfig.authMethod === AuthMethod.AES_GCM) {
+            authHeaderSize = 32;
+        } else {
+            throw new AuthenticationError(`Unsupported auth method: ${tenantConfig.authMethod}`);
+        }
+
+        const totalPacketSize = 40 + authHeaderSize + pduSize;
+        if (totalPacketSize > MAX_DATAGRAM_SIZE) {
+            throw new RateLimitError(
+                `Rate request size (${totalPacketSize} bytes) exceeds maximum datagram size of ${MAX_DATAGRAM_SIZE} bytes`
+            );
+        }
+
+        const buffer = Buffer.alloc(totalPacketSize);
         let pos = 0;
         
         // Generate unique request ID
@@ -455,19 +487,7 @@ class WireProtocol {
         buffer.writeUInt8(0, pos); pos += 1;  // tenant_mgmt_flag (0 = regular operation, 1 = admin) - client never sends admin messages
         buffer.writeUInt8(0, pos); pos += 1;  // padding byte 1
         buffer.writeUInt8(0, pos); pos += 1;  // padding byte 2
-        
-        // Build PDU first for AES encryption - correct structure per spec
-        let metricsLabelBytes = null;
-        let metricsLabelTlvSize = 0;
-        if (metricsLabel) {
-            metricsLabelBytes = Buffer.from(metricsLabel, 'utf-8');
-            const bodySize = 2 + metricsLabelBytes.length; // str_length + label data
-            const paddedBodySize = Math.ceil(bodySize / 4) * 4; // Round up to 4-byte boundary
-            metricsLabelTlvSize = 4 + paddedBodySize; // TLV header + padded body
-        }
-        
-        const pduBodySize = 4 + guards.length * 36 + resources.length * 28 + metricsLabelTlvSize; // guard_count + resource_count + blocks + optional TLVs
-        const pduSize = 8 + pduBodySize; // PDU header (8 bytes) + body
+
         const pduBuffer = Buffer.alloc(pduSize);
         let pduPos = 0;
         
@@ -561,7 +581,28 @@ class WireProtocol {
             return null;
         }
 
-        const buffer = Buffer.alloc(1200);
+        // Build PDU first
+        const pduSize = 12 + serviceLatencyBlocks.length * LATENCY_REPORT_BLOCK_SIZE;
+
+        let authHeaderSize;
+        if (tenantConfig.authMethod === AuthMethod.NONE) {
+            authHeaderSize = 4;
+        } else if (tenantConfig.authMethod === AuthMethod.COOKIE) {
+            authHeaderSize = 36;
+        } else if (tenantConfig.authMethod === AuthMethod.AES_GCM) {
+            authHeaderSize = 32;
+        } else {
+            throw new AuthenticationError(`Unsupported auth method: ${tenantConfig.authMethod}`);
+        }
+
+        const totalPacketSize = 40 + authHeaderSize + pduSize;
+        if (totalPacketSize > MAX_DATAGRAM_SIZE) {
+            throw new RateLimitError(
+                `Latency report size (${totalPacketSize} bytes) exceeds maximum datagram size of ${MAX_DATAGRAM_SIZE} bytes`
+            );
+        }
+
+        const buffer = Buffer.alloc(totalPacketSize);
         let pos = 0;
         
         // Generate unique request ID
@@ -579,8 +620,6 @@ class WireProtocol {
         buffer.writeUInt8(0, pos); pos += 1;  // padding byte 1
         buffer.writeUInt8(0, pos); pos += 1;  // padding byte 2
         
-        // Build PDU first
-        const pduSize = 12 + serviceLatencyBlocks.length * LATENCY_REPORT_BLOCK_SIZE;
         const pduBuffer = Buffer.alloc(pduSize);
         let pduPos = 0;
         
@@ -1440,13 +1479,19 @@ class RClient {
         const dedupTtlMs = this.config.requestPolicy.horizonMs(this.quotas.dedup_ttl_ms_max);
         
         // Create request packet
-        const packet = WireProtocol.createRateRequest(
-            this.config.tenant,
-            resources,
-            guards,
-            metricsLabel,
-            dedupTtlMs
-        );
+        let packet;
+        try {
+            packet = WireProtocol.createRateRequest(
+                this.config.tenant,
+                resources,
+                guards,
+                metricsLabel,
+                dedupTtlMs
+            );
+        } catch (err) {
+            callback(err);
+            return;
+        }
         
         this._sendRateRequest(packet, resources, guards, (error, parsed) => {
             if (error) return callback(error);
@@ -1484,7 +1529,13 @@ class RClient {
     }
 
     _reportLatencyInternal(serviceLatencyBlocks, callback) {
-        const packet = WireProtocol.createLatencyReport(this.config.tenant, serviceLatencyBlocks);
+        let packet;
+        try {
+            packet = WireProtocol.createLatencyReport(this.config.tenant, serviceLatencyBlocks);
+        } catch (err) {
+            callback(err);
+            return;
+        }
         if (!packet) {
             callback(null);
             return;
@@ -1576,5 +1627,6 @@ module.exports = {
     nextSteeringPort,
     isOccupiedError,
     createBoundUdpSocket,
-    bindNextSteeringSocket
+    bindNextSteeringSocket,
+    MAX_DATAGRAM_SIZE
 };

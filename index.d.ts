@@ -11,6 +11,7 @@ export const AuthMethod: {
   readonly AES_GCM: 'aes';
 };
 
+export const MAX_DATAGRAM_SIZE = 1200;
 export const STEERING_PORT_MIN = 49152;
 export const STEERING_PORT_MAX = 65535;
 export const STEERING_PORT_COUNT = 16384;

@@ -143,6 +143,25 @@ test('destroy during replacement bind rejects queued calls and closes late socke
   assert.equal(client._transports.size, 0);
 });
 
+test('steering waiting for drain does not strand requests behind another request horizon', async () => {
+  const { client, binds, completeBind } = fixture();
+  try {
+    client._getTransport('udp4', assert.ifError);
+    await completeBind();
+    const current = client._transports.get('udp4');
+    current.inFlightCount++;
+    client._applySteeringFeedback('udp4');
+    assert.equal(binds.length, 0, 'replacement has not started while old operations drain');
+    let acquired = false;
+    client._getTransport('udp4', (error, transport) => {
+      assert.ifError(error);
+      assert.equal(transport, current);
+      acquired = true;
+    });
+    assert.equal(acquired, true, 'a queued old request must not age a fresh packet past its TTL');
+  } finally { client.destroy(); }
+});
+
 test('synchronous send failure leaves no retry timer armed', async (t) => {
   const { api, client, completeBind } = fixture();
   const socket = new FakeSocket();

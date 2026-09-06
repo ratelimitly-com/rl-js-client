@@ -978,11 +978,19 @@ class RClient {
                     this._retiredTransports.push(currentTransport);
                     const timer = setTimeout(() => {
                         try {
+                            currentTransport.socket.removeAllListeners();
                             currentTransport.socket.close();
                         } catch (_) {
                             /* ignored */
                         }
+                        currentTransport.inFlight.clear();
+                        currentTransport.drainCallbacks.length = 0;
+                        const idx = this._retiredTransports.indexOf(currentTransport);
+                        if (idx !== -1) {
+                            this._retiredTransports.splice(idx, 1);
+                        }
                     }, 500);
+                    currentTransport.retireTimer = timer;
                     if (typeof timer.unref === 'function') timer.unref();
                 }
             } catch (err) {
@@ -1514,18 +1522,28 @@ class RClient {
     destroy() {
         for (const transport of this._transports.values()) {
             try {
+                transport.socket.removeAllListeners();
                 transport.socket.close();
             } catch (_) {
                 /* ignored */
             }
+            transport.inFlight.clear();
+            transport.drainCallbacks.length = 0;
         }
         this._transports.clear();
         for (const transport of this._retiredTransports) {
+            if (transport.retireTimer) {
+                clearTimeout(transport.retireTimer);
+                transport.retireTimer = null;
+            }
             try {
+                transport.socket.removeAllListeners();
                 transport.socket.close();
             } catch (_) {
                 /* ignored */
             }
+            transport.inFlight.clear();
+            transport.drainCallbacks.length = 0;
         }
         this._retiredTransports = [];
     }

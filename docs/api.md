@@ -23,12 +23,20 @@ const client = createClient(process.env.RATELIMITLY_AUTH_KEY, null, {
 - **`dnsName`** (`string | null`, optional): Explicit discovery domain. Defaults to `c-${keyId}.p0.ratelimitly.com`.
 - **`options`** (`object`, optional):
   - `requestPolicy` (`RequestPolicy`): High-availability retry policy (defaults to unit=20ms, replay=1).
-  - `dnsRefreshIntervalS` (`number`): DNS SRV background refresh interval in seconds (default: 300).
+  - `dnsRefreshIntervalS` (`number`): Age after which a subsequent operation refreshes DNS SRV discovery (default: 300); there is no background refresh timer.
   - `steeringFeedback` (`boolean`): Whether to honor source-port steering advisories (default: `true`).
 
 ### `client.destroy()`
 
-Closes persistent UDP sockets and cancels background discovery timers.
+Permanently closes this client, cancels request timers, and settles pending
+operations with a `RateLimitError`. Repeated calls are harmless. Subsequent
+checks and reports fail, including empty operations; create a new client to
+resume work. Bind and DNS completions arriving after destruction cannot
+reactivate the client. `client.isDestroyed()` reports this terminal state.
+
+Source-port rotation waits for operations using the old socket to drain. Retired
+sockets and their listeners are released when closing completes; they are not
+retained for the lifetime of the client.
 
 ```javascript
 client.destroy();
@@ -41,6 +49,12 @@ client.destroy();
 ### `client.checkRateLimit(resources, guards?, metricsLabel?, callback?)`
 
 Evaluates rate limit buckets and latency guards in a single atomic UDP datagram. Returns a `Promise<RateLimitResult>` when `callback` is omitted, or invokes `callback(err, result)`.
+
+The complete encoded datagram must fit `MAX_DATAGRAM_SIZE` (1200 bytes), including
+authentication, guards, resources, and any UTF-8 metrics label. Oversized batches
+fail locally with `RateLimitError` through the Promise or callback, before DNS
+discovery or sending. Resource requests are never split: splitting would lose
+their atomic admission semantics.
 
 ```javascript
 // Native Promise / Async-Await
@@ -75,7 +89,7 @@ new ResourceRequest(bucketName, windowSizeMs, rateLimit, tokensRequested = 1)
 - **`bucketName`** (`string`): Logical identifier (e.g. `'api_v1'`, `'user:1234'`, `'tenant:cust-42'`).
 - **`windowSizeMs`** (`number`): Sliding window duration in milliseconds (bounded by credential quota `rate_window_size_ms_max`).
 - **`rateLimit`** (`number`): Maximum tokens allowed across the sliding window.
-- **`tokensRequested`** (`number`, optional): Tokens requested (default: `1`).
+- **`tokensRequested`** (`number`, optional): Tokens requested (default: `1` when omitted or `undefined`). Must be an integer from `0` through `65535`; explicit `0` is preserved. Invalid values, including `null`, throw `RangeError` when constructing the request.
 
 ### `LatencyGuard`
 
@@ -98,6 +112,9 @@ new LatencyGuard({
 ### `ServiceLatencyBlock` & `client.reportLatency(blocks, callback?)`
 
 Publishes observed downstream latency samples asynchronously to all r-servers:
+
+The same 1200-byte encoded-datagram limit applies. An oversized report batch
+fails locally through the Promise or callback; it is not truncated or split.
 
 ```javascript
 const block = new ServiceLatencyBlock({

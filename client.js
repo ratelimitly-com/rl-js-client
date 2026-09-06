@@ -76,7 +76,13 @@ class CanonicalIds {
 }
 
 class ResourceRequest {
-    constructor(bucketName, windowSizeMs, rateLimit, tokensRequested) {
+    constructor(bucketName, windowSizeMs, rateLimit, tokensRequested = 1) {
+        if (tokensRequested === undefined) {
+            tokensRequested = 1;
+        }
+        if (typeof tokensRequested !== 'number' || !Number.isInteger(tokensRequested) || tokensRequested < 0 || tokensRequested > 0xffff) {
+            throw new RangeError('tokensRequested must be a non-negative integer <= 65535');
+        }
         this.bucketName = bucketName;
         this.windowSizeMs = windowSizeMs;
         this.rateLimit = rateLimit;

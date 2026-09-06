@@ -99,8 +99,6 @@ async function testDestroyCancelsRetryTimersAndSettlesRequests() {
   const resource = new ResourceRequest('test_bucket', 1000, 100, 1);
 
   let unhandledError = null;
-  const originalUnhandled = process.listeners('unhandledRejection');
-  const originalUncaught = process.listeners('uncaughtException');
   const errorListener = (err) => { unhandledError = err; };
   process.on('uncaughtException', errorListener);
 
@@ -120,7 +118,10 @@ async function testDestroyCancelsRetryTimersAndSettlesRequests() {
     client.destroy();
 
     // Assert that the pending request settles promptly with a RateLimitError
-    const res = await reqPromise;
+    const res = await Promise.race([
+      reqPromise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Pending request hung and did not settle promptly after destroy()')), 200))
+    ]);
     assert.strictEqual(res, 'rejected', 'Pending request must reject when client is destroyed');
     assert(settleError instanceof RateLimitError || (settleError && settleError.message.includes('destroyed')),
       `Expected destruction error, got: ${settleError ? settleError.message : settleError}`);
@@ -145,26 +146,35 @@ async function testSubsequentCallsRejectedAfterDestroy() {
 
   try {
     client.destroy();
-    assert.strictEqual(client.isDestroyed(), true, 'isDestroyed() should return true');
+    assert.strictEqual(typeof client.isDestroyed === 'function' && client.isDestroyed(), true, 'isDestroyed() should return true');
 
     // checkRateLimit Promise rejection
     await assert.rejects(
-      client.checkRateLimit([resource], []),
+      Promise.race([
+        client.checkRateLimit([resource], []),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('checkRateLimit hung after destroy()')), 200))
+      ]),
       /destroyed/i,
       'checkRateLimit should reject when client is destroyed'
     );
 
     // checkRateLimit callback rejection
-    await new Promise((resolve, reject) => {
-      client.checkRateLimit([resource], [], (err) => {
-        if (err && /destroyed/i.test(err.message)) resolve();
-        else reject(new Error(`Expected destroyed error in callback, got: ${err}`));
-      });
-    });
+    await Promise.race([
+      new Promise((resolve, reject) => {
+        client.checkRateLimit([resource], [], (err) => {
+          if (err && /destroyed/i.test(err.message)) resolve();
+          else reject(new Error(`Expected destroyed error in callback, got: ${err}`));
+        });
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('checkRateLimit callback hung after destroy()')), 200))
+    ]);
 
     // reportLatency Promise rejection
     await assert.rejects(
-      client.reportLatency([]),
+      Promise.race([
+        client.reportLatency([]),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('reportLatency hung after destroy()')), 200))
+      ]),
       /destroyed/i,
       'reportLatency should reject when client is destroyed'
     );
@@ -187,7 +197,10 @@ async function testDestroyDuringAsyncBindDoesNotLeakSocket() {
     // Synchronously destroy before bindNextSteeringSocket completes
     client.destroy();
 
-    const err = await reqPromise;
+    const err = await Promise.race([
+      reqPromise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Request during async bind hung after destroy()')), 200))
+    ]);
     assert(err instanceof Error, 'Request should reject');
 
     // Give time for any background promise continuation to execute
@@ -195,7 +208,7 @@ async function testDestroyDuringAsyncBindDoesNotLeakSocket() {
 
     // Client transports should remain empty and destroyed
     assert.strictEqual(client._transports.size, 0, 'No transport should be retained after destroy');
-    assert.strictEqual(client.isDestroyed(), true);
+    assert.strictEqual(typeof client.isDestroyed === 'function' && client.isDestroyed(), true);
   } finally {
     await mockServer.close();
   }
@@ -237,19 +250,22 @@ async function testSteeringRebindWithSynchronousCallbackAndLongHorizon() {
     let secondRequestError = null;
 
     // Start request 1
-    const res1 = await new Promise((resolve, reject) => {
-      client.checkRateLimit([resource], [], (err1, decision1) => {
-        if (err1) return reject(err1);
+    const res1 = await Promise.race([
+      new Promise((resolve, reject) => {
+        client.checkRateLimit([resource], [], (err1, decision1) => {
+          if (err1) return reject(err1);
 
-        // In the callback of request 1, synchronously start request 2 with long horizon
-        client.checkRateLimit([resource], [], (err2, decision2) => {
-          secondRequestCompleted = true;
-          secondRequestError = err2;
-          if (err2) reject(err2);
-          else resolve(decision2);
+          // In the callback of request 1, synchronously start request 2 with long horizon
+          client.checkRateLimit([resource], [], (err2, decision2) => {
+            secondRequestCompleted = true;
+            secondRequestError = err2;
+            if (err2) reject(err2);
+            else resolve(decision2);
+          });
         });
-      });
-    });
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Steering rebind request timed out or hung')), 2000))
+    ]);
 
     assert.strictEqual(secondRequestCompleted, true, 'Second request must complete successfully');
     assert.strictEqual(secondRequestError, null, 'Second request must not encounter closed socket');

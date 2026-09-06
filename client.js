@@ -447,7 +447,7 @@ class WireProtocol {
             const paddedBodySize = Math.ceil(bodySize / 4) * 4; // Round up to 4-byte boundary
             metricsLabelTlvSize = 4 + paddedBodySize; // TLV header + padded body
         }
-        
+
         const pduBodySize = 4 + guards.length * 36 + resources.length * 28 + metricsLabelTlvSize; // guard_count + resource_count + blocks + optional TLVs
         const pduSize = 8 + pduBodySize; // PDU header (8 bytes) + body
 

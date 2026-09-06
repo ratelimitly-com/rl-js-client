@@ -863,6 +863,17 @@ class RClient {
         return Boolean(this._destroyed);
     }
 
+    _flushTransportQueue(family, error, transport) {
+        const queue = this._transportInitQueue.get(family);
+        this._transportInitQueue.delete(family);
+        if (!queue) return;
+        for (const cb of queue.splice(0)) {
+            // An earlier callback may destroy the client synchronously.
+            cb(this._destroyed ? new RateLimitError('Client is destroyed') : error,
+                this._destroyed ? undefined : transport);
+        }
+    }
+
     _getTransport(family, callback) {
         if (this._destroyed) {
             return callback(new RateLimitError('Client is destroyed'));
@@ -895,8 +906,7 @@ class RClient {
                     } catch (_) {
                         /* ignored */
                     }
-                    this._transportInitQueue.delete(fam);
-                    for (const cb of queue) cb(new RateLimitError('Client is destroyed'));
+                    this._flushTransportQueue(fam, new RateLimitError('Client is destroyed'));
                     return;
                 }
 
@@ -935,12 +945,10 @@ class RClient {
                     this._steeringStats.lastPort = selectedPort;
                 }
 
-                this._transportInitQueue.delete(fam);
-                for (const cb of queue) cb(null, transport);
+                this._flushTransportQueue(fam, null, transport);
             })
             .catch((err) => {
-                this._transportInitQueue.delete(fam);
-                for (const cb of queue) cb(err);
+                this._flushTransportQueue(fam, err);
             });
     }
 
@@ -961,6 +969,8 @@ class RClient {
             }
             if (this._steeringApplying) return;
             this._steeringApplying = true;
+            let acquiredTransport = currentTransport;
+            let bindError = null;
             try {
                 const currentPort = currentTransport ? currentTransport.currentPort : 0;
                 const startPort = this._nextSteeringPorts.get(fam) || nextSteeringPort(currentPort);
@@ -971,11 +981,6 @@ class RClient {
                         newSocket.close();
                     } catch (_) {
                         /* ignored */
-                    }
-                    const queued = this._transportInitQueue.get(fam);
-                    if (queued) {
-                        this._transportInitQueue.delete(fam);
-                        for (const cb of queued) cb(new RateLimitError('Client is destroyed'));
                     }
                     return;
                 }
@@ -1012,6 +1017,7 @@ class RClient {
 
                 // Activate receiving on replacement before retiring old socket (Requirement 8)
                 this._transports.set(fam, newTransport);
+                acquiredTransport = newTransport;
                 this._nextSteeringPorts.set(fam, nextPort);
 
                 this._steeringStats.feedbackZeroCount++;
@@ -1041,25 +1047,18 @@ class RClient {
                     }
                 }
 
-                const queued = this._transportInitQueue.get(fam);
-                if (queued) {
-                    this._transportInitQueue.delete(fam);
-                    for (const cb of queued) cb(null, newTransport);
-                }
             } catch (err) {
                 console.warn(`Source-port steering rebind failed: ${err.message}`);
-                const queued = this._transportInitQueue.get(fam);
-                if (queued) {
-                    this._transportInitQueue.delete(fam);
-                    if (currentTransport && !currentTransport.retired) {
-                        for (const cb of queued) cb(null, currentTransport);
-                    } else {
-                        for (const cb of queued) cb(err);
-                    }
+                if (!currentTransport || currentTransport.retired) {
+                    bindError = err;
+                    acquiredTransport = undefined;
                 }
             } finally {
+                // Publish the settled rebind state before invoking user code:
+                // callbacks may immediately start another operation.
                 this._steeringPending = false;
                 this._steeringApplying = false;
+                this._flushTransportQueue(fam, bindError, acquiredTransport);
             }
         };
 
@@ -1139,6 +1138,7 @@ class RClient {
 
         const srvName = `_ratelimitly._udp.${this.config.tenant.dnsName}`;
         this.resolver.resolveSrv(srvName, (srvError, srvRecords) => {
+            if (this._destroyed) return callback(new RateLimitError('Client is destroyed'));
             if (!srvError && srvRecords && srvRecords.length > 0) {
                 const servers = [];
                 const candidates = srvRecords
@@ -1156,6 +1156,10 @@ class RClient {
                 let pending = candidates.length;
                 for (const candidate of candidates) {
                     this.resolver.resolve4(candidate.srv.name, (ipError, addresses) => {
+                        if (this._destroyed) {
+                            if (--pending === 0) callback(new RateLimitError('Client is destroyed'));
+                            return;
+                        }
                         if (!ipError && addresses) {
                             for (const ip of addresses) {
                                 servers.push({ ip, port: candidate.srv.port, serverId: candidate.serverId });
@@ -1327,7 +1331,9 @@ class RClient {
                 };
 
                 const sendMissing = (bestEffort) => {
-                    if (terminal || this._destroyed) return;
+                    // Completion delivery happens after the result is selected;
+                    // only ordinary retries must stop at the terminal boundary.
+                    if ((terminal && !bestEffort) || this._destroyed) return;
                     const targets = membership.filter((server) => !seenServerIds.has(server.serverId));
                     if (targets.length === 0) return;
                     let pending = targets.length;
@@ -1391,6 +1397,7 @@ class RClient {
                 const armRound = () => {
                     if (terminal || this._destroyed) return;
                     sendMissing(false);
+                    if (terminal || this._destroyed) return;
                     const waitMs = policy.unitMs * policy.replayGap.units(round);
                     timer = setTimeout(() => {
                         timer = null;
@@ -1740,7 +1747,7 @@ class RClient {
         this._activeRequests.clear();
 
         for (const [fam, queue] of Array.from(this._transportInitQueue.entries())) {
-            for (const cb of queue) {
+            for (const cb of queue.splice(0)) {
                 try {
                     cb(destroyError);
                 } catch (_) {

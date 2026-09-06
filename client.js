@@ -892,7 +892,9 @@ class RClient {
                 if (this._destroyed) {
                     try {
                         socket.close();
-                    } catch (_) {}
+                    } catch (_) {
+                        /* ignored */
+                    }
                     this._transportInitQueue.delete(fam);
                     for (const cb of queue) cb(new RateLimitError('Client is destroyed'));
                     return;
@@ -967,7 +969,9 @@ class RClient {
                 if (this._destroyed) {
                     try {
                         newSocket.close();
-                    } catch (_) {}
+                    } catch (_) {
+                        /* ignored */
+                    }
                     const queued = this._transportInitQueue.get(fam);
                     if (queued) {
                         this._transportInitQueue.delete(fam);
@@ -1720,14 +1724,18 @@ class RClient {
         for (const active of Array.from(this._activeRateRequests)) {
             try {
                 active.cancel(destroyError);
-            } catch (_) {}
+            } catch (_) {
+                /* ignored */
+            }
         }
         this._activeRateRequests.clear();
 
         for (const active of Array.from(this._activeRequests)) {
             try {
                 active.cancel(destroyError);
-            } catch (_) {}
+            } catch (_) {
+                /* ignored */
+            }
         }
         this._activeRequests.clear();
 
@@ -1735,7 +1743,9 @@ class RClient {
             for (const cb of queue) {
                 try {
                     cb(destroyError);
-                } catch (_) {}
+                } catch (_) {
+                    /* ignored */
+                }
             }
         }
         this._transportInitQueue.clear();
@@ -1746,7 +1756,9 @@ class RClient {
                 if (typeof handler.onError === 'function') {
                     try {
                         handler.onError(destroyError);
-                    } catch (_) {}
+                    } catch (_) {
+                        /* ignored */
+                    }
                 }
             }
             transport.inFlight.clear();
@@ -1765,7 +1777,9 @@ class RClient {
                 if (typeof handler.onError === 'function') {
                     try {
                         handler.onError(destroyError);
-                    } catch (_) {}
+                    } catch (_) {
+                        /* ignored */
+                    }
                 }
             }
             transport.inFlight.clear();

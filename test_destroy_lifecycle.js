@@ -233,7 +233,9 @@ async function testSteeringRebindWithSynchronousCallbackAndLongHorizon() {
         try {
           const resp = buildResponse(msg, serverId, true, resource);
           mockServer.socket.send(resp, rinfo.port, rinfo.address);
-        } catch (_) {}
+        } catch (_) {
+          /* ignored */
+        }
       }, 600);
     }
   });

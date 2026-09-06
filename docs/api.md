@@ -75,7 +75,7 @@ new ResourceRequest(bucketName, windowSizeMs, rateLimit, tokensRequested = 1)
 - **`bucketName`** (`string`): Logical identifier (e.g. `'api_v1'`, `'user:1234'`, `'tenant:cust-42'`).
 - **`windowSizeMs`** (`number`): Sliding window duration in milliseconds (bounded by credential quota `rate_window_size_ms_max`).
 - **`rateLimit`** (`number`): Maximum tokens allowed across the sliding window.
-- **`tokensRequested`** (`number`, optional): Tokens requested (default: `1`).
+- **`tokensRequested`** (`number`, optional): Tokens requested (default: `1` when omitted or `undefined`). Must be an integer from `0` through `65535`; explicit `0` is preserved. Invalid values, including `null`, throw `RangeError` when constructing the request.
 
 ### `LatencyGuard`
 

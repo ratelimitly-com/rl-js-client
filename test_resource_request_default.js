@@ -106,6 +106,18 @@ function testInvalidTokensValidation() {
     /tokensRequested must be a non-negative integer/i
   );
 
+  for (const value of [null, NaN, Infinity, -Infinity, true, 1n, {}, []]) {
+    assert.throws(() => new ResourceRequest('bucket_invalid', 1000, 100, value), RangeError);
+  }
+
+  // One-resource and multi-resource requests use the same constructor default.
+  const batch = WireProtocol.createRateRequest(tenant, [
+    new ResourceRequest('first', 1000, 100),
+    new ResourceRequest('second', 1000, 100, undefined),
+    new ResourceRequest('third', 1000, 100, 0),
+  ], [], null, 1000);
+  assert.deepStrictEqual([80, 108, 136].map((offset) => batch.readUInt16LE(offset)), [1, 1, 0]);
+
   console.log('✅ Invalid tokensRequested validation verified');
 }
 

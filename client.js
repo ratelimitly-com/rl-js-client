@@ -880,7 +880,10 @@ class RClient {
         }
         const fam = family === 'udp6' ? 'udp6' : 'udp4';
         const current = this._transports.get(fam);
-        if (current && !current.retired && !this._steeringPending && !this._steeringApplying) {
+        // While an advisory waits for old operations to drain, this socket is
+        // still usable. Queue only during the actual asynchronous replacement;
+        // otherwise one slow request can age new packets past their dedup TTL.
+        if (current && !current.retired && !this._steeringApplying) {
             return callback(null, current);
         }
 

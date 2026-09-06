@@ -847,6 +847,9 @@ class RClient {
         this.dnsResolverHintShown = false;
 
         // Persistent UDP transport and source-port steering state
+        this._destroyed = false;
+        this._activeRateRequests = new Set();
+        this._activeRequests = new Set();
         this._transports = new Map();
         this._nextSteeringPorts = new Map();
         this._transportInitQueue = new Map();
@@ -856,15 +859,53 @@ class RClient {
         this._retiredTransports = [];
     }
 
+    isDestroyed() {
+        return Boolean(this._destroyed);
+    }
+
+    _closeSocket(socket) {
+        // Stop response dispatch now, but retain error protection and close
+        // listeners until the asynchronous close completes.
+        socket.removeAllListeners('message');
+        socket.on('error', () => {});
+        const cleanup = () => socket.removeAllListeners();
+        socket.once('close', cleanup);
+        try {
+            socket.close();
+        } catch (_) {
+            // An already-closed socket has no further events to drain.
+            cleanup();
+        }
+    }
+
+    _flushTransportQueue(family, error, transport) {
+        const queue = this._transportInitQueue.get(family);
+        this._transportInitQueue.delete(family);
+        if (!queue) return;
+        for (const cb of queue.splice(0)) {
+            // An earlier callback may destroy the client synchronously.
+            cb(this._destroyed ? new RateLimitError('Client is destroyed') : error,
+                this._destroyed ? undefined : transport);
+        }
+    }
+
     _getTransport(family, callback) {
+        if (this._destroyed) {
+            return callback(new RateLimitError('Client is destroyed'));
+        }
         const fam = family === 'udp6' ? 'udp6' : 'udp4';
         const current = this._transports.get(fam);
-        if (current && !current.retired) {
+        if (current && !current.retired && !this._steeringPending && !this._steeringApplying) {
             return callback(null, current);
         }
 
         if (this._transportInitQueue.has(fam)) {
             this._transportInitQueue.get(fam).push(callback);
+            return;
+        }
+
+        if (this._steeringPending || this._steeringApplying) {
+            this._transportInitQueue.set(fam, [callback]);
             return;
         }
 
@@ -874,6 +915,12 @@ class RClient {
         const startPort = this._nextSteeringPorts.get(fam) || STEERING_PORT_MIN;
         bindNextSteeringSocket(fam, startPort)
             .then(({ socket, selectedPort, nextPort }) => {
+                if (this._destroyed) {
+                    this._closeSocket(socket);
+                    this._flushTransportQueue(fam, new RateLimitError('Client is destroyed'));
+                    return;
+                }
+
                 socket.unref();
                 const transport = {
                     family: fam,
@@ -896,7 +943,7 @@ class RClient {
                 });
 
                 socket.on('error', (err) => {
-                    for (const handler of transport.inFlight.values()) {
+                    for (const handler of Array.from(transport.inFlight.values())) {
                         if (typeof handler.onError === 'function') {
                             handler.onError(err);
                         }
@@ -909,16 +956,15 @@ class RClient {
                     this._steeringStats.lastPort = selectedPort;
                 }
 
-                this._transportInitQueue.delete(fam);
-                for (const cb of queue) cb(null, transport);
+                this._flushTransportQueue(fam, null, transport);
             })
             .catch((err) => {
-                this._transportInitQueue.delete(fam);
-                for (const cb of queue) cb(err);
+                this._flushTransportQueue(fam, err);
             });
     }
 
     _applySteeringFeedback(family) {
+        if (this._destroyed) return;
         const fam = family === 'udp6' ? 'udp6' : 'udp4';
         if (this._steeringPending || this._steeringApplying) {
             return;
@@ -927,12 +973,25 @@ class RClient {
 
         const currentTransport = this._transports.get(fam);
         const executeRebind = async () => {
+            if (this._destroyed) {
+                this._steeringPending = false;
+                this._steeringApplying = false;
+                return;
+            }
             if (this._steeringApplying) return;
             this._steeringApplying = true;
+            let acquiredTransport = currentTransport;
+            let bindError = null;
             try {
                 const currentPort = currentTransport ? currentTransport.currentPort : 0;
                 const startPort = this._nextSteeringPorts.get(fam) || nextSteeringPort(currentPort);
                 const { socket: newSocket, selectedPort, nextPort } = await bindNextSteeringSocket(fam, startPort);
+
+                if (this._destroyed) {
+                    this._closeSocket(newSocket);
+                    return;
+                }
+
                 newSocket.unref();
 
                 const newTransport = {
@@ -956,7 +1015,7 @@ class RClient {
                 });
 
                 newSocket.on('error', (err) => {
-                    for (const handler of newTransport.inFlight.values()) {
+                    for (const handler of Array.from(newTransport.inFlight.values())) {
                         if (typeof handler.onError === 'function') {
                             handler.onError(err);
                         }
@@ -965,6 +1024,7 @@ class RClient {
 
                 // Activate receiving on replacement before retiring old socket (Requirement 8)
                 this._transports.set(fam, newTransport);
+                acquiredTransport = newTransport;
                 this._nextSteeringPorts.set(fam, nextPort);
 
                 this._steeringStats.feedbackZeroCount++;
@@ -976,28 +1036,34 @@ class RClient {
                 if (currentTransport) {
                     currentTransport.retired = true;
                     this._retiredTransports.push(currentTransport);
-                    const timer = setTimeout(() => {
-                        try {
-                            currentTransport.socket.removeAllListeners();
-                            currentTransport.socket.close();
-                        } catch (_) {
-                            /* ignored */
-                        }
+                    const closeRetiringSocket = () => {
+                        this._closeSocket(currentTransport.socket);
                         currentTransport.inFlight.clear();
                         currentTransport.drainCallbacks.length = 0;
                         const idx = this._retiredTransports.indexOf(currentTransport);
                         if (idx !== -1) {
                             this._retiredTransports.splice(idx, 1);
                         }
-                    }, 500);
-                    currentTransport.retireTimer = timer;
-                    if (typeof timer.unref === 'function') timer.unref();
+                    };
+                    if (currentTransport.inFlightCount === 0) {
+                        closeRetiringSocket();
+                    } else {
+                        currentTransport.drainCallbacks.push(closeRetiringSocket);
+                    }
                 }
+
             } catch (err) {
                 console.warn(`Source-port steering rebind failed: ${err.message}`);
+                if (!currentTransport || currentTransport.retired) {
+                    bindError = err;
+                    acquiredTransport = undefined;
+                }
             } finally {
+                // Publish the settled rebind state before invoking user code:
+                // callbacks may immediately start another operation.
                 this._steeringPending = false;
                 this._steeringApplying = false;
+                this._flushTransportQueue(fam, bindError, acquiredTransport);
             }
         };
 
@@ -1060,6 +1126,11 @@ class RClient {
             callback = () => {}; // No-op callback
         }
 
+        if (this._destroyed) {
+            callback(new RateLimitError('Client is destroyed'));
+            return;
+        }
+
         if (this.config.tenant.servers && this.config.tenant.servers.length > 0) {
             callback(new RateLimitError('Explicit server lists are not supported; use SRV discovery'));
             return;
@@ -1072,6 +1143,7 @@ class RClient {
 
         const srvName = `_ratelimitly._udp.${this.config.tenant.dnsName}`;
         this.resolver.resolveSrv(srvName, (srvError, srvRecords) => {
+            if (this._destroyed) return callback(new RateLimitError('Client is destroyed'));
             if (!srvError && srvRecords && srvRecords.length > 0) {
                 const servers = [];
                 const candidates = srvRecords
@@ -1089,6 +1161,10 @@ class RClient {
                 let pending = candidates.length;
                 for (const candidate of candidates) {
                     this.resolver.resolve4(candidate.srv.name, (ipError, addresses) => {
+                        if (this._destroyed) {
+                            if (--pending === 0) callback(new RateLimitError('Client is destroyed'));
+                            return;
+                        }
                         if (!ipError && addresses) {
                             for (const ip of addresses) {
                                 servers.push({ ip, port: candidate.srv.port, serverId: candidate.serverId });
@@ -1130,17 +1206,55 @@ class RClient {
     }
 
     _sendRateRequest(packet, resources, guards, callback) {
+        if (this._destroyed) {
+            callback(new RateLimitError('Client is destroyed'));
+            return;
+        }
+
+        let terminal = false;
+        let cleanupTransport = null;
+        let timer = null;
+
+        const activeEntry = {
+            cancel: (err) => {
+                if (terminal) return;
+                terminal = true;
+                if (timer) {
+                    clearTimeout(timer);
+                    timer = null;
+                }
+                if (typeof cleanupTransport === 'function') {
+                    cleanupTransport();
+                    cleanupTransport = null;
+                }
+                callback(err || new RateLimitError('Client is destroyed'));
+            }
+        };
+        this._activeRateRequests.add(activeEntry);
+
         const refreshIfNeeded = (done) => {
             if (this._shouldRefreshDns()) this._refreshServers(done);
             else done(null);
         };
         refreshIfNeeded((refreshError) => {
+            if (terminal || this._destroyed) {
+                if (!terminal) {
+                    terminal = true;
+                    this._activeRateRequests.delete(activeEntry);
+                    callback(new RateLimitError('Client is destroyed'));
+                }
+                return;
+            }
             if (refreshError && this.servers.length === 0) {
+                terminal = true;
+                this._activeRateRequests.delete(activeEntry);
                 callback(new RateLimitError('No servers available'));
                 return;
             }
             const membership = this.servers.slice();
             if (membership.length === 0) {
+                terminal = true;
+                this._activeRateRequests.delete(activeEntry);
                 callback(new RateLimitError('No servers available'));
                 return;
             }
@@ -1153,11 +1267,19 @@ class RClient {
             let candidate = null;
             let round = 0;
             let finalReceive = false;
-            let timer = null;
-            let terminal = false;
 
             this._getTransport('udp4', (transportErr, transport) => {
+                if (terminal || this._destroyed) {
+                    if (!terminal) {
+                        terminal = true;
+                        this._activeRateRequests.delete(activeEntry);
+                        callback(new RateLimitError('Client is destroyed'));
+                    }
+                    return;
+                }
                 if (transportErr) {
+                    terminal = true;
+                    this._activeRateRequests.delete(activeEntry);
                     callback(transportErr);
                     return;
                 }
@@ -1196,35 +1318,12 @@ class RClient {
                         }
                     }
                 };
-
-                const sendMissing = (bestEffort) => {
-                    const targets = membership.filter((server) => !seenServerIds.has(server.serverId));
-                    if (targets.length === 0) return;
-                    let pending = targets.length;
-                    let delivered = 0;
-                    let lastError = null;
-                    for (const server of targets) {
-                        socket.send(packet, server.port, server.ip, (error) => {
-                            if (error) lastError = error; else delivered += 1;
-                            pending -= 1;
-                            if (pending > 0 || bestEffort || terminal) return;
-                            if (delivered === 0) {
-                                terminal = true;
-                                cleanup();
-                                callback(lastError);
-                            } else if (delivered < targets.length) {
-                                console.warn(
-                                    `Rate request reached ${delivered} of ${targets.length} endpoints ` +
-                                    `(${targets.length - delivered} unreachable): ${lastError.message}`
-                                );
-                            }
-                        });
-                    }
-                };
+                cleanupTransport = cleanup;
 
                 const finish = (error, selected) => {
                     if (terminal) return;
                     terminal = true;
+                    this._activeRateRequests.delete(activeEntry);
                     if (!error && selected && policy.completionDelivery) sendMissing(true);
                     cleanup();
 
@@ -1236,9 +1335,44 @@ class RClient {
                     callback(error, selected);
                 };
 
+                const sendMissing = (bestEffort) => {
+                    // Completion delivery happens after the result is selected;
+                    // only ordinary retries must stop at the terminal boundary.
+                    if ((terminal && !bestEffort) || this._destroyed) return;
+                    const targets = membership.filter((server) => !seenServerIds.has(server.serverId));
+                    if (targets.length === 0) return;
+                    let pending = targets.length;
+                    let delivered = 0;
+                    let lastError = null;
+                    for (const server of targets) {
+                        try {
+                            socket.send(packet, server.port, server.ip, (error) => {
+                                if (error) lastError = error; else delivered += 1;
+                                pending -= 1;
+                                if (pending > 0 || bestEffort || terminal || this._destroyed) return;
+                                if (delivered === 0) {
+                                    finish(lastError || new RateLimitError('Failed to deliver request'));
+                                } else if (delivered < targets.length) {
+                                    console.warn(
+                                        `Rate request reached ${delivered} of ${targets.length} endpoints ` +
+                                        `(${targets.length - delivered} unreachable): ${lastError ? lastError.message : 'unknown error'}`
+                                    );
+                                }
+                            });
+                        } catch (sendErr) {
+                            lastError = sendErr;
+                            pending -= 1;
+                            if (pending === 0 && delivered === 0 && !bestEffort && !terminal && !this._destroyed) {
+                                finish(lastError);
+                                return;
+                            }
+                        }
+                    }
+                };
+
                 transport.inFlight.set(reqIdHex, {
                     onMessage: (response) => {
-                        if (terminal) return;
+                        if (terminal || this._destroyed) return;
                         try {
                             const serverId = this._extractResponseServerId(response);
                             if (serverId === null || !trusted.has(serverId)) return;
@@ -1260,15 +1394,19 @@ class RClient {
                         }
                     },
                     onError: (err) => {
+                        if (terminal || this._destroyed) return;
                         finish(err);
                     }
                 });
 
                 const armRound = () => {
+                    if (terminal || this._destroyed) return;
                     sendMissing(false);
+                    if (terminal || this._destroyed) return;
                     const waitMs = policy.unitMs * policy.replayGap.units(round);
                     timer = setTimeout(() => {
                         timer = null;
+                        if (terminal || this._destroyed) return;
                         if (candidate) {
                             finish(null, candidate);
                         } else if (round < policy.replayCount) {
@@ -1277,7 +1415,11 @@ class RClient {
                         } else if (policy.finalReceiveUnits > 0) {
                             finalReceive = true;
                             timer = setTimeout(
-                                () => finish(new TimeoutError('No valid response within the request-policy horizon')),
+                                () => {
+                                    timer = null;
+                                    if (terminal || this._destroyed) return;
+                                    finish(new TimeoutError('No valid response within the request-policy horizon'));
+                                },
                                 policy.unitMs * policy.finalReceiveUnits
                             );
                         } else {
@@ -1295,6 +1437,32 @@ class RClient {
         if (!callback) {
             callback = () => {}; // No-op callback
         }
+
+        if (this._destroyed) {
+            callback(new RateLimitError('Client is destroyed'));
+            return;
+        }
+
+        let terminal = false;
+        let cleanupTransport = null;
+        let timer = null;
+
+        const activeEntry = {
+            cancel: (err) => {
+                if (terminal) return;
+                terminal = true;
+                if (timer) {
+                    clearTimeout(timer);
+                    timer = null;
+                }
+                if (typeof cleanupTransport === 'function') {
+                    cleanupTransport();
+                    cleanupTransport = null;
+                }
+                callback(err || new RateLimitError('Client is destroyed'));
+            }
+        };
+        this._activeRequests.add(activeEntry);
         
         const refreshIfNeeded = (cb) => {
             if (!cb) cb = () => {};
@@ -1306,19 +1474,41 @@ class RClient {
         };
         
         refreshIfNeeded((error) => {
+            if (terminal || this._destroyed) {
+                if (!terminal) {
+                    terminal = true;
+                    this._activeRequests.delete(activeEntry);
+                    callback(new RateLimitError('Client is destroyed'));
+                }
+                return;
+            }
             if (error) {
                 console.warn(`DNS refresh failed: ${error.message}`);
                 if (this.servers.length === 0) {
+                    terminal = true;
+                    this._activeRequests.delete(activeEntry);
                     return callback(new RateLimitError('No servers available'));
                 }
             }
             
             if (this.servers.length === 0) {
+                terminal = true;
+                this._activeRequests.delete(activeEntry);
                 return callback(new RateLimitError('No servers available'));
             }
 
             this._getTransport('udp4', (transportErr, transport) => {
+                if (terminal || this._destroyed) {
+                    if (!terminal) {
+                        terminal = true;
+                        this._activeRequests.delete(activeEntry);
+                        callback(new RateLimitError('Client is destroyed'));
+                    }
+                    return;
+                }
                 if (transportErr) {
+                    terminal = true;
+                    this._activeRequests.delete(activeEntry);
                     return callback(transportErr);
                 }
 
@@ -1332,7 +1522,6 @@ class RClient {
                 const expectedRequestId = packet.length >= 28 ? packet.subarray(12, 28) : null;
                 const reqIdHex = expectedRequestId ? expectedRequestId.toString('hex') : null;
                 let responseReceived = false;
-                let timer = null;
 
                 const cleanup = () => {
                     if (timer) clearTimeout(timer);
@@ -1352,18 +1541,28 @@ class RClient {
                         }
                     }
                 };
+                cleanupTransport = cleanup;
+
+                const finish = (err, res) => {
+                    if (terminal) return;
+                    terminal = true;
+                    this._activeRequests.delete(activeEntry);
+                    cleanup();
+                    callback(err, res);
+                };
 
                 if (expectResponse && reqIdHex) {
                     timer = setTimeout(() => {
+                        timer = null;
                         if (!responseReceived) {
                             responseReceived = true;
-                            cleanup();
-                            callback(new TimeoutError('No response received within timeout'));
+                            finish(new TimeoutError('No response received within timeout'));
                         }
                     }, this.config.requestPolicy.horizonMs(this.quotas ? this.quotas.dedup_ttl_ms_max : 0xffffffff));
 
                     transport.inFlight.set(reqIdHex, {
                         onMessage: (response) => {
+                            if (terminal || this._destroyed) return;
                             try {
                                 if (response.length >= 16) {
                                     const serverId = this._extractResponseServerId(response);
@@ -1373,39 +1572,40 @@ class RClient {
 
                                     if (responseReceived) return;
                                     responseReceived = true;
-                                    cleanup();
                                     this.serverTracker.recordResponse(serverId, 0);
-                                    callback(null, response);
+                                    finish(null, response);
                                 }
                             } catch (err) {
                                 if (!responseReceived) {
                                     responseReceived = true;
-                                    cleanup();
-                                    callback(err);
+                                    finish(err);
                                 }
                             }
                         },
                         onError: (err) => {
+                            if (terminal || this._destroyed) return;
                             if (!responseReceived) {
                                 responseReceived = true;
-                                cleanup();
-                                callback(err);
+                                finish(err);
                             }
                         }
                     });
                 }
 
                 for (const server of this.servers) {
-                    socket.send(packet, server.port, server.ip, (sendErr) => {
-                        if (sendErr) {
-                            console.warn(`Failed to send to ${server.ip}:${server.port}: ${sendErr.message}`);
-                        }
-                    });
+                    try {
+                        socket.send(packet, server.port, server.ip, (sendErr) => {
+                            if (sendErr) {
+                                console.warn(`Failed to send to ${server.ip}:${server.port}: ${sendErr.message}`);
+                            }
+                        });
+                    } catch (sendErr) {
+                        console.warn(`Failed to send to ${server.ip}:${server.port}: ${sendErr.message}`);
+                    }
                 }
 
                 if (!expectResponse) {
-                    cleanup();
-                    callback(null, null);
+                    finish(null, null);
                 }
             });
         });
@@ -1439,6 +1639,10 @@ class RClient {
     }
 
     _checkRateLimitInternal(resources, guards, metricsLabel, callback) {
+        if (this._destroyed) {
+            callback(new RateLimitError('Client is destroyed'));
+            return;
+        }
         resources = resources || [];
         guards = guards || [];
         if (resources.length === 0 && guards.length === 0) {
@@ -1492,6 +1696,10 @@ class RClient {
     }
 
     _reportLatencyInternal(serviceLatencyBlocks, callback) {
+        if (this._destroyed) {
+            callback(new RateLimitError('Client is destroyed'));
+            return;
+        }
         const packet = WireProtocol.createLatencyReport(this.config.tenant, serviceLatencyBlocks);
         if (!packet) {
             callback(null);
@@ -1520,30 +1728,71 @@ class RClient {
     }
 
     destroy() {
-        for (const transport of this._transports.values()) {
+        if (this._destroyed) return;
+        this._destroyed = true;
+
+        const destroyError = new RateLimitError('Client is destroyed');
+
+        for (const active of Array.from(this._activeRateRequests)) {
             try {
-                transport.socket.removeAllListeners();
-                transport.socket.close();
+                active.cancel(destroyError);
             } catch (_) {
                 /* ignored */
             }
-            transport.inFlight.clear();
+        }
+        this._activeRateRequests.clear();
+
+        for (const active of Array.from(this._activeRequests)) {
+            try {
+                active.cancel(destroyError);
+            } catch (_) {
+                /* ignored */
+            }
+        }
+        this._activeRequests.clear();
+
+        for (const [fam, queue] of Array.from(this._transportInitQueue.entries())) {
+            for (const cb of queue.splice(0)) {
+                try {
+                    cb(destroyError);
+                } catch (_) {
+                    /* ignored */
+                }
+            }
+        }
+        this._transportInitQueue.clear();
+
+        for (const transport of Array.from(this._transports.values())) {
             transport.drainCallbacks.length = 0;
+            for (const handler of Array.from(transport.inFlight.values())) {
+                if (typeof handler.onError === 'function') {
+                    try {
+                        handler.onError(destroyError);
+                    } catch (_) {
+                        /* ignored */
+                    }
+                }
+            }
+            transport.inFlight.clear();
+            transport.inFlightCount = 0;
+            this._closeSocket(transport.socket);
         }
         this._transports.clear();
-        for (const transport of this._retiredTransports) {
-            if (transport.retireTimer) {
-                clearTimeout(transport.retireTimer);
-                transport.retireTimer = null;
-            }
-            try {
-                transport.socket.removeAllListeners();
-                transport.socket.close();
-            } catch (_) {
-                /* ignored */
+
+        for (const transport of Array.from(this._retiredTransports)) {
+            transport.drainCallbacks.length = 0;
+            for (const handler of Array.from(transport.inFlight.values())) {
+                if (typeof handler.onError === 'function') {
+                    try {
+                        handler.onError(destroyError);
+                    } catch (_) {
+                        /* ignored */
+                    }
+                }
             }
             transport.inFlight.clear();
-            transport.drainCallbacks.length = 0;
+            transport.inFlightCount = 0;
+            this._closeSocket(transport.socket);
         }
         this._retiredTransports = [];
     }

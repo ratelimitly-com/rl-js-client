@@ -23,12 +23,20 @@ const client = createClient(process.env.RATELIMITLY_AUTH_KEY, null, {
 - **`dnsName`** (`string | null`, optional): Explicit discovery domain. Defaults to `c-${keyId}.p0.ratelimitly.com`.
 - **`options`** (`object`, optional):
   - `requestPolicy` (`RequestPolicy`): High-availability retry policy (defaults to unit=20ms, replay=1).
-  - `dnsRefreshIntervalS` (`number`): DNS SRV background refresh interval in seconds (default: 300).
+  - `dnsRefreshIntervalS` (`number`): Age after which a subsequent operation refreshes DNS SRV discovery (default: 300); there is no background refresh timer.
   - `steeringFeedback` (`boolean`): Whether to honor source-port steering advisories (default: `true`).
 
 ### `client.destroy()`
 
-Closes persistent UDP sockets and cancels background discovery timers.
+Permanently closes this client, cancels request timers, and settles pending
+operations with a `RateLimitError`. Repeated calls are harmless. Subsequent
+checks and reports fail, including empty operations; create a new client to
+resume work. Bind and DNS completions arriving after destruction cannot
+reactivate the client. `client.isDestroyed()` reports this terminal state.
+
+Source-port rotation waits for operations using the old socket to drain. Retired
+sockets and their listeners are released when closing completes; they are not
+retained for the lifetime of the client.
 
 ```javascript
 client.destroy();

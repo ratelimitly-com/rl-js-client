@@ -26,7 +26,7 @@
     "SECURITY.md"
   ],
   "scripts": {
-    "test": "node test_api_key_v1.js && node test_policy.js && node test_ha.js && node test_steering.js && node test_steering_integration.js && node test_send_failure.js && node test_client.js",
+    "test": "node test_api_key_v1.js && node test_policy.js && node test_ha.js && node test_steering.js && node test_steering_integration.js && node test_send_failure.js && node test_destroy_lifecycle.js && node test_client.js",
     "example": "node example_usage.js",
     "start": "node client.js"
   },

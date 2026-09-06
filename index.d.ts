@@ -290,6 +290,7 @@ export class RClient {
     };
   };
 
+  isDestroyed(): boolean;
   destroy(): void;
 }
 

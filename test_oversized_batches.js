@@ -2,10 +2,12 @@
 'use strict';
 
 const assert = require('assert');
+const crypto = require('crypto');
 const {
   AuthMethod,
   RateLimitError,
   ResourceRequest,
+  LatencyGuard,
   ServiceLatencyBlock,
   TenantConfig,
   WireProtocol,
@@ -147,11 +149,68 @@ function testOversizedLatencyReportRejection() {
   console.log('✅ Oversized latency report rejection tests passed');
 }
 
+function testExactBoundaryAndGuardBatches() {
+  for (const [tenant, authSize, resourceCount] of [
+    [tenantNone, 4, 40], [tenantCookie, 36, 39], [tenantAes, 32, 39]
+  ]) {
+    const resources = makeResources(resourceCount);
+    const baseSize = 40 + authSize + 12 + resourceCount * 28;
+    // Non-ASCII UTF-8: size validation must count bytes, not JS characters.
+    const label = 'é'.repeat((1200 - baseSize - 6) / 2);
+    const packet = WireProtocol.createRateRequest(tenant, resources, [], label, 1000);
+    assert.strictEqual(packet.length, 1200, 'exactly 1200 bytes must be accepted');
+    assert.strictEqual(packet.buffer.byteLength, 1200, 'envelope allocation must be exact');
+    let pdu = packet.subarray(40 + authSize);
+    if (tenant === tenantAes) {
+      const decipher = crypto.createDecipheriv('aes-256-gcm', aesSecret, packet.subarray(44, 56));
+      decipher.setAAD(packet.subarray(0, 56));
+      decipher.setAuthTag(packet.subarray(56, 72));
+      pdu = Buffer.concat([decipher.update(pdu), decipher.final()]);
+    }
+    assert.strictEqual(pdu.readUInt16LE(2), pdu.length, 'declared PDU must be complete');
+    const labelOffset = 12 + resourceCount * 28;
+    assert.strictEqual(pdu.readUInt16LE(labelOffset + 4), Buffer.byteLength(label));
+    assert.strictEqual(pdu.subarray(labelOffset + 6).toString('utf8'), label);
+    assert.throws(() => WireProtocol.createRateRequest(tenant, resources, [], label + 'a', 1000), RateLimitError);
+
+    const guard = new LatencyGuard({
+      latencyTrackerName: 'tracker', thresholdMs: 100, ttlMs: 5000,
+      maxSamples: 100, minSampleThreshold: 10,
+    });
+    for (const resourceCount of [0, 2]) {
+      const maxGuards = Math.floor((1200 - 40 - authSize - 12 - resourceCount * 28) / 36);
+      const guards = Array(maxGuards).fill(guard);
+      const packet = WireProtocol.createRateRequest(tenant, makeResources(resourceCount), guards, null, 1000);
+      assert.strictEqual(packet.length, 40 + authSize + 12 + resourceCount * 28 + maxGuards * 36);
+      assert.throws(() => WireProtocol.createRateRequest(
+        tenant, makeResources(resourceCount), [...guards, guard], null, 1000
+      ), RateLimitError);
+    }
+  }
+  console.log('✅ Exact 1200-byte, UTF-8, encrypted PDU, guard-only and mixed boundaries passed');
+}
+
+function testOversizedLabelRejectedBeforeCopy() {
+  const label = 'x'.repeat(65536);
+  const originalFrom = Buffer.from;
+  let copied = false;
+  Buffer.from = function (value, ...args) {
+    if (value === label) copied = true;
+    return originalFrom(value, ...args);
+  };
+  try {
+    assert.throws(() => WireProtocol.createRateRequest(tenantNone, makeResources(1), [], label, 1000), RateLimitError);
+    assert.strictEqual(copied, false, 'reject oversized labels before allocating their byte buffer');
+  } finally { Buffer.from = originalFrom; }
+}
+
 async function testClientRejection() {
   console.log('Testing RClient rejection for oversized payloads...');
   const client = new RClient(new RClientConfig(tenantNone));
   client.servers = [{ ip: '127.0.0.1', port: 29292, serverId: 1001 }];
   client.lastDnsRefresh = Date.now();
+  client._refreshServers = () => assert.fail('oversized input must not query DNS');
+  client._getTransport = () => assert.fail('oversized input must not acquire a socket');
 
   // checkRateLimit Promise rejection
   await assert.rejects(
@@ -190,11 +249,14 @@ async function testClientRejection() {
   });
 
   console.log('✅ RClient rejection tests passed');
+  client.destroy();
 }
 
 async function runAll() {
   testOversizedRateRequestRejection();
   testOversizedLatencyReportRejection();
+  testExactBoundaryAndGuardBatches();
+  testOversizedLabelRejectedBeforeCopy();
   await testClientRejection();
   console.log('🎉 All oversized batch validation tests passed!');
 }

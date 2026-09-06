@@ -443,8 +443,7 @@ class WireProtocol {
         let metricsLabelBytes = null;
         let metricsLabelTlvSize = 0;
         if (metricsLabel) {
-            metricsLabelBytes = Buffer.from(metricsLabel, 'utf-8');
-            const bodySize = 2 + metricsLabelBytes.length; // str_length + label data
+            const bodySize = 2 + Buffer.byteLength(metricsLabel, 'utf-8'); // str_length + label data
             const paddedBodySize = Math.ceil(bodySize / 4) * 4; // Round up to 4-byte boundary
             metricsLabelTlvSize = 4 + paddedBodySize; // TLV header + padded body
         }
@@ -470,6 +469,7 @@ class WireProtocol {
             );
         }
 
+        if (metricsLabel) metricsLabelBytes = Buffer.from(metricsLabel, 'utf-8');
         const buffer = Buffer.alloc(totalPacketSize);
         let pos = 0;
         

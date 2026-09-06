@@ -42,6 +42,12 @@ client.destroy();
 
 Evaluates rate limit buckets and latency guards in a single atomic UDP datagram. Returns a `Promise<RateLimitResult>` when `callback` is omitted, or invokes `callback(err, result)`.
 
+The complete encoded datagram must fit `MAX_DATAGRAM_SIZE` (1200 bytes), including
+authentication, guards, resources, and any UTF-8 metrics label. Oversized batches
+fail locally with `RateLimitError` through the Promise or callback, before DNS
+discovery or sending. Resource requests are never split: splitting would lose
+their atomic admission semantics.
+
 ```javascript
 // Native Promise / Async-Await
 const result = await client.checkRateLimit(resources, guards, 'checkout_service');
@@ -98,6 +104,9 @@ new LatencyGuard({
 ### `ServiceLatencyBlock` & `client.reportLatency(blocks, callback?)`
 
 Publishes observed downstream latency samples asynchronously to all r-servers:
+
+The same 1200-byte encoded-datagram limit applies. An oversized report batch
+fails locally through the Promise or callback; it is not truncated or split.
 
 ```javascript
 const block = new ServiceLatencyBlock({

@@ -191,22 +191,19 @@ export class TenantConfig {
   authMethod: string;
   authSecret: string | Uint8Array | null;
   servers: ServerEndpoint[] | null;
-  steeringFeedback: boolean;
 
   constructor(
     dnsName: string,
     keyId: bigint | number,
     authMethod?: string,
     authSecret?: string | Uint8Array | null,
-    servers?: ServerEndpoint[] | null,
-    steeringFeedback?: boolean
+    servers?: ServerEndpoint[] | null
   );
 }
 
 export interface RClientOptions {
   requestPolicy?: RequestPolicy;
   dnsRefreshIntervalS?: number;
-  steeringFeedback?: boolean;
 }
 
 export class RClientConfig {

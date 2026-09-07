@@ -15,7 +15,6 @@ const { createClient } = require('ratelimitly-client');
 
 const client = createClient(process.env.RATELIMITLY_AUTH_KEY, null, {
   dnsRefreshIntervalS: 300,
-  steeringFeedback: true,
 });
 ```
 
@@ -24,7 +23,6 @@ const client = createClient(process.env.RATELIMITLY_AUTH_KEY, null, {
 - **`options`** (`object`, optional):
   - `requestPolicy` (`RequestPolicy`): High-availability retry policy (defaults to unit=20ms, replay=1).
   - `dnsRefreshIntervalS` (`number`): Age after which a subsequent operation refreshes DNS SRV discovery (default: 300); there is no background refresh timer.
-  - `steeringFeedback` (`boolean`): Whether to honor source-port steering advisories (default: `true`).
 
 ### `client.destroy()`
 

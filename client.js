@@ -191,13 +191,12 @@ Object.defineProperty(GuardResult.prototype, 'serviceId', {
 });
 
 class TenantConfig {
-    constructor(dnsName, keyId, authMethod = AuthMethod.NONE, authSecret = null, servers = null, steeringFeedback = false) {
+    constructor(dnsName, keyId, authMethod = AuthMethod.NONE, authSecret = null, servers = null) {
         this.dnsName = dnsName;
         this.keyId = keyId;
         this.authMethod = authMethod;
         this.authSecret = authSecret; // Bech32 key for cookie/aes auth methods
         this.servers = servers; // [{ip: '127.0.0.1', port: 29292}, ...]
-        this.steeringFeedback = steeringFeedback; // boolean: false=change port, true=keep port
     }
 }
 
@@ -486,7 +485,7 @@ class WireProtocol {
         buffer.writeBigUInt64LE(BigInt(tenantConfig.keyId), pos); pos += 8;
         uniqueId.copy(buffer, pos); pos += 16;
         buffer.writeBigUInt64LE(timestamp, pos); pos += 8;
-        buffer.writeUInt8(tenantConfig.steeringFeedback ? 1 : 0, pos); pos += 1;  // steering_feedback (boolean: 0=change port, 1=keep port)
+        buffer.writeUInt8(0, pos); pos += 1;  // steering_feedback (boolean: 0=change port, 1=keep port)
         buffer.writeUInt8(0, pos); pos += 1;  // tenant_mgmt_flag (0 = regular operation, 1 = admin) - client never sends admin messages
         buffer.writeUInt8(0, pos); pos += 1;  // padding byte 1
         buffer.writeUInt8(0, pos); pos += 1;  // padding byte 2
@@ -618,7 +617,7 @@ class WireProtocol {
         buffer.writeBigUInt64LE(BigInt(tenantConfig.keyId), pos); pos += 8;
         uniqueId.copy(buffer, pos); pos += 16;
         buffer.writeBigUInt64LE(timestamp, pos); pos += 8;
-        buffer.writeUInt8(tenantConfig.steeringFeedback ? 1 : 0, pos); pos += 1;  // steering_feedback (boolean: 0=change port, 1=keep port)
+        buffer.writeUInt8(0, pos); pos += 1;  // steering_feedback (boolean: 0=change port, 1=keep port)
         buffer.writeUInt8(0, pos); pos += 1;  // tenant_mgmt_flag (0 = regular operation, 1 = admin) - client never sends admin messages
         buffer.writeUInt8(0, pos); pos += 1;  // padding byte 1
         buffer.writeUInt8(0, pos); pos += 1;  // padding byte 2
@@ -1373,7 +1372,7 @@ class RClient {
                     cleanup();
 
                     // Apply steering feedback if server advised port change (steeringFeedback === false)
-                    if (!error && selected && this.config.tenant.steeringFeedback && selected.steeringFeedback === false) {
+                    if (!error && selected && selected.steeringFeedback === false) {
                         this._applySteeringFeedback('udp4');
                     }
 
@@ -1866,8 +1865,7 @@ function createClient(authKey, dnsName = null, options = {}) {
         decoded.keyId,
         authMethod,
         authKey,
-        null,
-        options.steeringFeedback !== undefined ? Boolean(options.steeringFeedback) : true
+        null
     );
     const config = new RClientConfig(tenantConfig, options);
     return new RClient(config);

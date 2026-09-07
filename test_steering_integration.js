@@ -83,7 +83,7 @@ async function createMockServer(serverId, responseQueue) {
 }
 
 function createTestClient(serverPort, serverId) {
-  const tenant = new TenantConfig('example.test', 1n, AuthMethod.NONE, testKey, null, true);
+  const tenant = new TenantConfig('example.test', 1n, AuthMethod.NONE, testKey);
   const client = new RClient(new RClientConfig(tenant, {
     requestPolicy: new RequestPolicy({
       unitMs: 100,

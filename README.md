@@ -213,7 +213,6 @@ Creates and initializes an `RClient` instance.
 - **`options`** `(object, optional)`:
   - `requestPolicy` `(RequestPolicy)`: Custom HA retry/timeout policy.
   - `dnsRefreshIntervalS` `(number)`: DNS SRV cache refresh interval in seconds (default: `300`).
-  - `steeringFeedback` `(boolean)`: Enable server port steering affinity (default: `false`).
 
 ### `RClient` Methods
 - **`checkRateLimit(resources, [guards], [metricsLabel], callback)`**: Evaluates rate quotas and latency guards.

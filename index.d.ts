@@ -206,7 +206,6 @@ export class TenantConfig {
 export interface RClientOptions {
   requestPolicy?: RequestPolicy;
   dnsRefreshIntervalS?: number;
-  steeringFeedback?: boolean;
 }
 
 export class RClientConfig {

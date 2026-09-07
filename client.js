@@ -191,7 +191,7 @@ Object.defineProperty(GuardResult.prototype, 'serviceId', {
 });
 
 class TenantConfig {
-    constructor(dnsName, keyId, authMethod = AuthMethod.NONE, authSecret = null, servers = null, steeringFeedback = false) {
+    constructor(dnsName, keyId, authMethod = AuthMethod.NONE, authSecret = null, servers = null, steeringFeedback = true) {
         this.dnsName = dnsName;
         this.keyId = keyId;
         this.authMethod = authMethod;
@@ -1373,7 +1373,7 @@ class RClient {
                     cleanup();
 
                     // Apply steering feedback if server advised port change (steeringFeedback === false)
-                    if (!error && selected && this.config.tenant.steeringFeedback && selected.steeringFeedback === false) {
+                    if (!error && selected && selected.steeringFeedback === false) {
                         this._applySteeringFeedback('udp4');
                     }
 

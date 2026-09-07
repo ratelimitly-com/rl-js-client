@@ -191,15 +191,13 @@ export class TenantConfig {
   authMethod: string;
   authSecret: string | Uint8Array | null;
   servers: ServerEndpoint[] | null;
-  steeringFeedback: boolean;
 
   constructor(
     dnsName: string,
     keyId: bigint | number,
     authMethod?: string,
     authSecret?: string | Uint8Array | null,
-    servers?: ServerEndpoint[] | null,
-    steeringFeedback?: boolean
+    servers?: ServerEndpoint[] | null
   );
 }
 

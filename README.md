@@ -36,26 +36,6 @@ so there is nothing to configure but the key.
 
 ---
 
-## Architecture Overview
-
-<!-- npm does not render mermaid, so this stays a plain-text diagram. -->
-
-```text
-Node.js Application
-      |  checkRateLimit()
-      v
-RClient (ratelimitly-client)
-      |  zero-config DNS SRV discovery
-      |  (_ratelimitly._udp.c-<keyId>.p0.ratelimitly.com)
-      v
-Ratelimitly Node A / Node B          <- UDP wire protocol, AES-256-GCM
-      |
-      v
-Admit / Deny decision  ->  back to your application
-```
-
----
-
 ## Installation
 
 ```bash

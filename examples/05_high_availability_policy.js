@@ -43,7 +43,7 @@ console.log(`- Calculated Policy Horizon: ${customPolicy.horizonMs()}ms`);
 // Initialize client with custom HA options
 const client = createClient(authKey, null, {
   requestPolicy: customPolicy,
-  dnsRefreshIntervalS: 300 // Refresh DNS SRV records every 5 minutes
+  dnsRefreshIntervalS: 60 // Custom DNS SRV refresh interval (default: 10 seconds)
 });
 
 const resources = [

@@ -285,7 +285,7 @@ class RClientConfig {
     constructor(tenant, options = {}) {
         this.tenant = tenant;
         this.requestPolicy = options.requestPolicy || new RequestPolicy();
-        this.dnsRefreshIntervalS = options.dnsRefreshIntervalS || 300;
+        this.dnsRefreshIntervalS = options.dnsRefreshIntervalS !== undefined ? options.dnsRefreshIntervalS : 10;
     }
 }
 
@@ -884,6 +884,7 @@ class RClient {
         }
         this.servers = [];
         this.lastDnsRefresh = 0;
+        this._dnsRefreshTtlMs = 0;
         this.resolver = this._buildResolver();
         this.dnsResolverHintShown = false;
 
@@ -1203,15 +1204,31 @@ class RClient {
                 }
 
                 let pending = candidates.length;
+                let minAddressTtlS = 0;
                 for (const candidate of candidates) {
-                    this.resolver.resolve4(candidate.srv.name, (ipError, addresses) => {
+                    const handleResolvedAddresses = (ipError, addresses) => {
                         if (this._destroyed) {
                             if (--pending === 0) callback(new RateLimitError('Client is destroyed'));
                             return;
                         }
-                        if (!ipError && addresses) {
-                            for (const ip of addresses) {
-                                servers.push({ ip, port: candidate.srv.port, serverId: candidate.serverId });
+                        if (!ipError && Array.isArray(addresses)) {
+                            for (const entry of addresses) {
+                                let ip = null;
+                                let ttl = 0;
+                                if (typeof entry === 'string') {
+                                    ip = entry;
+                                } else if (entry && typeof entry.address === 'string') {
+                                    ip = entry.address;
+                                    if (Number.isFinite(entry.ttl) && entry.ttl > 0) {
+                                        ttl = Math.floor(entry.ttl);
+                                    }
+                                }
+                                if (ip) {
+                                    servers.push({ ip, port: candidate.srv.port, serverId: candidate.serverId });
+                                    if (ttl > 0 && (minAddressTtlS === 0 || ttl < minAddressTtlS)) {
+                                        minAddressTtlS = ttl;
+                                    }
+                                }
                             }
                         }
 
@@ -1231,9 +1248,16 @@ class RClient {
                             });
                             this.servers = servers;
                             this.lastDnsRefresh = Date.now();
+                            this._dnsRefreshTtlMs = minAddressTtlS > 0 ? minAddressTtlS * 1000 : 0;
                             callback(null);
                         }
-                    });
+                    };
+
+                    if (this.resolver.resolve4.length >= 3 || this.resolver === dns || (this.resolver instanceof dns.Resolver)) {
+                        this.resolver.resolve4(candidate.srv.name, { ttl: true }, handleResolvedAddresses);
+                    } else {
+                        this.resolver.resolve4(candidate.srv.name, handleResolvedAddresses);
+                    }
                 }
                 return;
             }
@@ -1246,7 +1270,11 @@ class RClient {
     }
     
     _shouldRefreshDns() {
-        return (Date.now() - this.lastDnsRefresh) > (this.config.dnsRefreshIntervalS * 1000);
+        let refreshIntervalMs = this.config.dnsRefreshIntervalS * 1000;
+        if (this._dnsRefreshTtlMs > 0 && this._dnsRefreshTtlMs < refreshIntervalMs) {
+            refreshIntervalMs = this._dnsRefreshTtlMs;
+        }
+        return (Date.now() - this.lastDnsRefresh) > refreshIntervalMs;
     }
 
     _sendRateRequest(packet, resources, guards, callback) {

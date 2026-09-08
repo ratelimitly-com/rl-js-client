@@ -197,7 +197,7 @@ const haPolicy = new RequestPolicy({
 
 const client = createClient(process.env.RATELIMITLY_AUTH_KEY, null, {
   requestPolicy: haPolicy,
-  dnsRefreshIntervalS: 300 // DNS SRV refresh interval
+  dnsRefreshIntervalS: 10 // DNS SRV refresh interval fallback (default: 10s; shorter DNS TTL takes precedence)
 });
 ```
 
@@ -212,7 +212,7 @@ Creates and initializes an `RClient` instance.
 - **`dnsName`** `(string, optional)`: Override tenant discovery domain (defaults to `c-${keyId}.p0.ratelimitly.com`).
 - **`options`** `(object, optional)`:
   - `requestPolicy` `(RequestPolicy)`: Custom HA retry/timeout policy.
-  - `dnsRefreshIntervalS` `(number)`: DNS SRV cache refresh interval in seconds (default: `300`).
+  - `dnsRefreshIntervalS` `(number)`: DNS SRV cache refresh interval in seconds (default: `10`; shorter advertised DNS TTL takes precedence).
 
 ### `RClient` Methods
 - **`checkRateLimit(resources, [guards], [metricsLabel], callback)`**: Evaluates rate quotas and latency guards.

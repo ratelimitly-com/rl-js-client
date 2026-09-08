@@ -22,7 +22,7 @@ const client = createClient(process.env.RATELIMITLY_AUTH_KEY, null, {
 - **`dnsName`** (`string | null`, optional): Explicit discovery domain. Defaults to `c-${keyId}.p0.ratelimitly.com`.
 - **`options`** (`object`, optional):
   - `requestPolicy` (`RequestPolicy`): High-availability retry policy (defaults to unit=20ms, replay=1).
-  - `dnsRefreshIntervalS` (`number`): Age after which a subsequent operation refreshes DNS SRV discovery (default: 10; shorter advertised DNS TTL takes precedence); there is no background refresh timer.
+  - `dnsRefreshIntervalS` (`number`): Age after which a subsequent operation refreshes DNS SRV discovery (default: 10); there is no background refresh timer.
 
 ### `client.destroy()`
 

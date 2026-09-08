@@ -27,18 +27,17 @@ test('RClientConfig and createClient default dnsRefreshIntervalS to 10 seconds',
   assert.equal(customClient.config.dnsRefreshIntervalS, 45, 'createClient should preserve custom dnsRefreshIntervalS');
 });
 
-test('DNS refresh respects address record TTL when shorter than configured interval', async () => {
+test('DNS refresh triggers after default 10 seconds', async () => {
   const tenantConfig = new TenantConfig('test.example.com', 1);
-  const config = new RClientConfig(tenantConfig, { dnsRefreshIntervalS: 10 });
+  const config = new RClientConfig(tenantConfig);
   const client = new RClient(config);
 
   client.resolver = {
     resolveSrv: (name, cb) => {
       cb(null, [{ name: 's-1.example.com', port: 29292, priority: 10, weight: 10 }]);
     },
-    resolve4: (name, options, cb) => {
-      const callback = typeof options === 'function' ? options : cb;
-      callback(null, [{ address: '127.0.0.1', ttl: 3 }]);
+    resolve4: (name, cb) => {
+      cb(null, ['127.0.0.1']);
     }
   };
 
@@ -46,105 +45,14 @@ test('DNS refresh respects address record TTL when shorter than configured inter
     client._refreshServers((err) => (err ? reject(err) : resolve()));
   });
 
-  assert.equal(client._dnsRefreshTtlMs, 3000, '_dnsRefreshTtlMs should be set to 3000ms from address TTL');
   assert.equal(client.servers.length, 1);
   assert.equal(client.servers[0].ip, '127.0.0.1');
-
-  // At elapsed = 2000ms: should NOT refresh yet (3000ms TTL has not passed)
-  client.lastDnsRefresh = Date.now() - 2000;
-  assert.equal(client._shouldRefreshDns(), false, 'Should not refresh before 3s TTL');
-
-  // At elapsed = 3100ms: should refresh because 3s TTL < 10s default
-  client.lastDnsRefresh = Date.now() - 3100;
-  assert.equal(client._shouldRefreshDns(), true, 'Should refresh after 3s TTL');
-});
-
-test('DNS refresh caps at dnsRefreshIntervalS when address TTL is larger', async () => {
-  const tenantConfig = new TenantConfig('test.example.com', 1);
-  const config = new RClientConfig(tenantConfig, { dnsRefreshIntervalS: 10 });
-  const client = new RClient(config);
-
-  client.resolver = {
-    resolveSrv: (name, cb) => {
-      cb(null, [{ name: 's-1.example.com', port: 29292, priority: 10, weight: 10 }]);
-    },
-    resolve4: (name, options, cb) => {
-      const callback = typeof options === 'function' ? options : cb;
-      callback(null, [{ address: '127.0.0.1', ttl: 60 }]);
-    }
-  };
-
-  await new Promise((resolve, reject) => {
-    client._refreshServers((err) => (err ? reject(err) : resolve()));
-  });
-
-  assert.equal(client._dnsRefreshTtlMs, 60000, '_dnsRefreshTtlMs should be set to 60000ms');
 
   // At elapsed = 9000ms: should NOT refresh yet (10s has not passed)
   client.lastDnsRefresh = Date.now() - 9000;
-  assert.equal(client._shouldRefreshDns(), false, 'Should not refresh before 10s');
+  assert.equal(client._shouldRefreshDns(), false, 'Should not refresh before 10s default interval');
 
-  // At elapsed = 10100ms: should refresh because dnsRefreshIntervalS (10s) < 60s TTL
+  // At elapsed = 10100ms: should refresh
   client.lastDnsRefresh = Date.now() - 10100;
-  assert.equal(client._shouldRefreshDns(), true, 'Should refresh after 10s fallback');
-});
-
-test('DNS refresh picks minimum positive TTL across multiple targets', async () => {
-  const tenantConfig = new TenantConfig('test.example.com', 1);
-  const config = new RClientConfig(tenantConfig, { dnsRefreshIntervalS: 10 });
-  const client = new RClient(config);
-
-  client.resolver = {
-    resolveSrv: (name, cb) => {
-      cb(null, [
-        { name: 's-1.example.com', port: 29292, priority: 10, weight: 10 },
-        { name: 's-2.example.com', port: 29292, priority: 10, weight: 10 }
-      ]);
-    },
-    resolve4: (name, options, cb) => {
-      const callback = typeof options === 'function' ? options : cb;
-      if (name.startsWith('s-1')) {
-        callback(null, [{ address: '127.0.0.1', ttl: 8 }]);
-      } else {
-        callback(null, [{ address: '127.0.0.2', ttl: 2 }]);
-      }
-    }
-  };
-
-  await new Promise((resolve, reject) => {
-    client._refreshServers((err) => (err ? reject(err) : resolve()));
-  });
-
-  assert.equal(client._dnsRefreshTtlMs, 2000, '_dnsRefreshTtlMs should be min TTL (2000ms)');
-  assert.equal(client.servers.length, 2);
-});
-
-test('DNS refresh falls back gracefully when plain string IP addresses are returned', async () => {
-  const tenantConfig = new TenantConfig('test.example.com', 1);
-  const config = new RClientConfig(tenantConfig, { dnsRefreshIntervalS: 10 });
-  const client = new RClient(config);
-
-  client.resolver = {
-    resolveSrv: (name, cb) => {
-      cb(null, [{ name: 's-1.example.com', port: 29292, priority: 10, weight: 10 }]);
-    },
-    resolve4: (name, options, cb) => {
-      const callback = typeof options === 'function' ? options : cb;
-      callback(null, ['127.0.0.1']);
-    }
-  };
-
-  await new Promise((resolve, reject) => {
-    client._refreshServers((err) => (err ? reject(err) : resolve()));
-  });
-
-  assert.equal(client._dnsRefreshTtlMs, 0, '_dnsRefreshTtlMs should be 0 when no TTL is provided');
-  assert.equal(client.servers.length, 1);
-  assert.equal(client.servers[0].ip, '127.0.0.1');
-
-  // Should use 10s default
-  client.lastDnsRefresh = Date.now() - 9000;
-  assert.equal(client._shouldRefreshDns(), false);
-  client.lastDnsRefresh = Date.now() - 10500;
-  assert.equal(client._shouldRefreshDns(), true);
+  assert.equal(client._shouldRefreshDns(), true, 'Should refresh after 10s default interval');
 });

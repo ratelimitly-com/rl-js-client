@@ -72,4 +72,4 @@ _ratelimitly._udp.c-${keyId}.p0.ratelimitly.com
 
 - SRV targets matching `s-<serverId>...` are resolved to IPv4 and IPv6 endpoints.
 - Server startup timestamp is extracted from `serverId` to prioritize the oldest active server.
-- Background refresh runs periodically according to `dnsRefreshIntervalS` (default: 300 seconds).
+- Background refresh runs periodically according to `dnsRefreshIntervalS` (default: 10 seconds).

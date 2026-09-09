@@ -199,6 +199,7 @@ function testClientConfiguration(callback) {
     const client = new RClient(config);
     assert(client.config.requestPolicy.unitMs === 25, 'Policy unit should be configured');
     assert(client.config.tenant.keyId === 12345, 'Tenant ID should be configured');
+    assert(client.config.dnsRefreshIntervalS === 10, 'DNS refresh interval should default to 10 seconds');
     
     console.log('✅ Client configuration tests passed');
     callback();

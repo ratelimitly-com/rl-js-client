@@ -285,7 +285,7 @@ class RClientConfig {
     constructor(tenant, options = {}) {
         this.tenant = tenant;
         this.requestPolicy = options.requestPolicy || new RequestPolicy();
-        this.dnsRefreshIntervalS = options.dnsRefreshIntervalS || 300;
+        this.dnsRefreshIntervalS = options.dnsRefreshIntervalS !== undefined ? options.dnsRefreshIntervalS : 10;
     }
 }
 

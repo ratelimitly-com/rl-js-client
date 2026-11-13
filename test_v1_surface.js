@@ -1,0 +1,21 @@
+const assert=require('assert');
+const {decodeApiKey}=require('./api_key_codec');
+const v1=decodeApiKey('rl-none1qyyqwps9qspsyq2sk8e0sfdp3ys');
+assert.strictEqual(typeof v1.quotas.rate_window_size_ms_max,'number');
+assert.throws(()=>decodeApiKey('rl-cookie1qgqsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqz8scfwu4f'),/version.*2|versioned/i);
+console.log('truthful v1 decoder PASS');
+
+const {decodeApiKeyVersioned,encodeApiKey}=require('./api_key_codec');
+const {RClient,RClientConfig,TenantConfig,AuthMethod}=require('./client');
+const corpus=require('./tests/fixtures/api_key_v2_test_vectors.json');
+const key=corpus.valid_credentials.find(v=>v.auth_method==='cookie' && v.window_code===31).bech32;
+const full=decodeApiKeyVersioned(key);
+assert.deepStrictEqual(full.quotas.rate_window_size_ms_max,{kind:'unlimited'});
+assert.throws(()=>encodeApiKey(full.authMethod,full.keyId,full.authSecret,full.quotas));
+assert.strictEqual(encodeApiKey(full.authMethod,full.keyId,full.authSecret,full.quotas,2),key);
+const client=new RClient(new RClientConfig(new TenantConfig(null,full.keyId,AuthMethod.COOKIE,key)));
+assert.strictEqual(client.quotas,null);
+assert.deepStrictEqual(client.versionedQuotas.rate_window_size_ms_max,{kind:'unlimited'});
+assert.strictEqual(client.versionedQuotas.dedup_ttl_ms_max,300);
+client.destroy();
+console.log('truthful versioned reader/writer/client metadata PASS');

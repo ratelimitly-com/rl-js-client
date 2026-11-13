@@ -6,7 +6,11 @@ QW/RW; all-short requests keep RT/RR. CanonicalIds retains short v1 identities
 inside mixed packets. Windows must be safe integral finite milliseconds, at most
 31536000000; unlimited is a cap, not a request or timeout.
 
-`decodeApiKey` dispatches formats 1/2. V1 quota JSON is unchanged; v2 window caps
+`decodeApiKey` retains its v1-only numeric result and rejects v2 with a reader hint.
+Use additive `decodeApiKeyVersioned` to dispatch formats 1/2 truthfully. The
+exported legacy `Quotas` interfaces remain numeric. Client `quotas` stays numeric
+for v1 and is null for v2; `versionedQuotas` exposes full metadata to opt-in
+consumers. V1 quota JSON is unchanged; v2 window caps
 are `{kind:'finite', milliseconds:N}` or `{kind:'unlimited'}`. Inspect the format
 before consuming the versioned cap. `encodeApiKey(..., quotas, 2)` explicitly
 selects v2; omitted version remains 1. Tagged v2 data is never silently encoded

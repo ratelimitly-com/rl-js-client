@@ -26,9 +26,10 @@
     "SECURITY.md"
   ],
   "scripts": {
-    "test": "node test_v2.js && node test_v2_shared.js && node test_api_key_v1.js && node test_policy.js && node test_ha.js && node test_steering.js && node test_steering_integration.js && node test_send_failure.js && node test_destroy_lifecycle.js && node test_lifecycle_regressions.js && node test_steering_transport_retention.js && node test_oversized_batches.js && node test_resource_request_default.js && node test_dns_refresh.js && node test_client.js",
+    "test": "npm run test:types && node test_v1_surface.js && node test_v2.js && node test_v2_shared.js && node test_api_key_v1.js && node test_policy.js && node test_ha.js && node test_steering.js && node test_steering_integration.js && node test_send_failure.js && node test_destroy_lifecycle.js && node test_lifecycle_regressions.js && node test_steering_transport_retention.js && node test_oversized_batches.js && node test_resource_request_default.js && node test_dns_refresh.js && node test_client.js",
     "example": "node example_usage.js",
-    "start": "node client.js"
+    "start": "node client.js",
+    "test:types": "tsc --noEmit --strict --target ES2020 --moduleResolution node test_types_v1.ts test_types_v2.ts"
   },
   "keywords": [
     "rate-limiting",
@@ -54,5 +55,9 @@
   "bugs": {
     "url": "https://github.com/ratelimitly-com/rl-js-client/issues"
   },
-  "homepage": "https://ratelimitly.com"
+  "homepage": "https://ratelimitly.com",
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "@types/node": "^22.0.0"
+  }
 }

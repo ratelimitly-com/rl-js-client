@@ -58,8 +58,16 @@ export interface Quotas {
   metrics_labels_max: number;
   latency_buffer_size_max: number;
   dedup_ttl_ms_max: number;
-  rate_window_size_ms_max: number | WindowCap;
+  rate_window_size_ms_max: number;
 }
+
+/** Full, version-aware metadata; the legacy Quotas interface stays numeric. */
+export type FullQuotas = Omit<Quotas, 'rate_window_size_ms_max'> & {
+  rate_window_size_ms_max: number | WindowCap;
+};
+export type QuotasV2 = Omit<Quotas, 'rate_window_size_ms_max'> & {
+  rate_window_size_ms_max: WindowCap;
+};
 
 export class ResourceRequest {
   bucketName: string;
@@ -244,6 +252,8 @@ export class RClient {
   config: RClientConfig;
   tenantConfig: TenantConfig;
   quotas: Quotas | null;
+  /** Full cap metadata for either credential version; never a TTL. */
+  versionedQuotas: FullQuotas | null;
 
   constructor(config: RClientConfig);
 

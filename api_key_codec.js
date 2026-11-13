@@ -221,7 +221,7 @@ function encodeQuotas(quotas, version) {
   return out;
 }
 
-function decodeApiKey(encoded) {
+function decodeApiKeyVersioned(encoded) {
   const { hrp, payload } = bech32Decode(encoded);
   if (!hrp.startsWith("rl-")) throw new Error("invalid hrp prefix (expected rl-*)");
 
@@ -256,6 +256,16 @@ function decodeApiKey(encoded) {
     authSecret: payload.slice(9, 41),
     quotas: decodeQuotas(payload, 41, payload[0]),
   };
+}
+
+// The legacy numeric surface is deliberately v1-only. Never return a tagged
+// v2 cap behind its existing numeric TypeScript declaration.
+function decodeApiKey(encoded) {
+  const decoded = decodeApiKeyVersioned(encoded);
+  if (decoded.formatVersion !== 1) {
+    throw new Error("format version 2 requires decodeApiKeyVersioned");
+  }
+  return decoded;
 }
 
 function encodeApiKey(authMethod, keyId, authSecret = new Uint8Array(0), quotas, formatVersion = FORMAT_VERSION) {
@@ -297,7 +307,7 @@ function bytesToHex(bytes) {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-module.exports = { decodeApiKey, encodeApiKey, bytesToHex };
+module.exports = { decodeApiKey, decodeApiKeyVersioned, encodeApiKey, bytesToHex };
 
 if (require.main === module) {
   const sampleQuotas = {

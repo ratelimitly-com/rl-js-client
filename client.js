@@ -7,7 +7,7 @@
 const dgram = require('dgram');
 const crypto = require('crypto');
 const dns = require('dns');
-const { decodeApiKey } = require('./api_key_codec');
+const { decodeApiKeyVersioned } = require('./api_key_codec');
 const {
     STEERING_PORT_MIN,
     STEERING_PORT_MAX,
@@ -338,7 +338,7 @@ class WireProtocol {
 
         let decoded;
         try {
-            decoded = decodeApiKey(tenantConfig.authSecret.trim());
+            decoded = decodeApiKeyVersioned(tenantConfig.authSecret.trim());
         } catch (error) {
             throw new AuthenticationError(`Invalid Bech32 auth key: ${error.message}`);
         }
@@ -895,9 +895,13 @@ class RClient {
     constructor(config) {
         this.config = config;
         this.serverTracker = new ServerTracker();
-        this.quotas = WireProtocol._tenantQuotas(config.tenant);
-        if (this.quotas && this.quotas.dedup_ttl_ms_max && this.config.requestPolicy) {
-            this.config.requestPolicy.horizonMs(this.quotas.dedup_ttl_ms_max);
+        this.versionedQuotas = WireProtocol._tenantQuotas(config.tenant);
+        // Preserve the legacy numeric/null metadata contract. V2 is available
+        // explicitly through versionedQuotas, including its unlimited tag.
+        this.quotas = this.versionedQuotas && typeof this.versionedQuotas.rate_window_size_ms_max === 'number'
+            ? this.versionedQuotas : null;
+        if (this.versionedQuotas && this.versionedQuotas.dedup_ttl_ms_max && this.config.requestPolicy) {
+            this.config.requestPolicy.horizonMs(this.versionedQuotas.dedup_ttl_ms_max);
         }
         this.servers = [];
         this.lastDnsRefresh = 0;
@@ -1619,7 +1623,7 @@ class RClient {
                             responseReceived = true;
                             finish(new TimeoutError('No response received within timeout'));
                         }
-                    }, this.config.requestPolicy.horizonMs(this.quotas ? this.quotas.dedup_ttl_ms_max : 0xffffffff));
+                    }, this.config.requestPolicy.horizonMs(this.versionedQuotas ? this.versionedQuotas.dedup_ttl_ms_max : 0xffffffff));
 
                     transport.inFlight.set(reqIdHex, {
                         onMessage: (response) => {
@@ -1710,7 +1714,7 @@ class RClient {
             callback(null, new RateLimitResult(true, [], [], 0, false, null));
             return;
         }
-        const dedupTtlMs = this.config.requestPolicy.horizonMs(this.quotas.dedup_ttl_ms_max);
+        const dedupTtlMs = this.config.requestPolicy.horizonMs(this.versionedQuotas.dedup_ttl_ms_max);
         
         // Create request packet
         let packet;
@@ -1873,7 +1877,7 @@ class RClient {
 
 // Convenience function
 function createClient(authKey, dnsName = null, options = {}) {
-    const decoded = decodeApiKey(authKey);
+    const decoded = decodeApiKeyVersioned(authKey);
     const authMethod = decoded.authMethod === 'none'
         ? AuthMethod.NONE
         : decoded.authMethod === 'cookie' ? AuthMethod.COOKIE : AuthMethod.AES_GCM;

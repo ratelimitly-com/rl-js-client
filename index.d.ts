@@ -50,13 +50,15 @@ export function bindNextSteeringSocket(
   nextPort: number;
 }>;
 
+export type WindowCap = {kind: 'finite'; milliseconds: number} | {kind: 'unlimited'};
+
 export interface Quotas {
   rate_buckets_max: number;
   latency_services_max: number;
   metrics_labels_max: number;
   latency_buffer_size_max: number;
   dedup_ttl_ms_max: number;
-  rate_window_size_ms_max: number;
+  rate_window_size_ms_max: number | WindowCap;
 }
 
 export class ResourceRequest {
@@ -186,6 +188,8 @@ export interface ServerEndpoint {
 }
 
 export class TenantConfig {
+  /** Explicitly configured server support; never inferred from key version. */
+  wideRateRequests?: boolean;
   dnsName: string;
   keyId: bigint | number;
   authMethod: string;
@@ -202,6 +206,7 @@ export class TenantConfig {
 }
 
 export interface RClientOptions {
+  wideRateRequests?: boolean;
   requestPolicy?: RequestPolicy;
   dnsRefreshIntervalS?: number;
 }

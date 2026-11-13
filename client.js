@@ -42,6 +42,14 @@ const AuthMethod = {
 
 class CanonicalIds {
     static bucketId(bucketName, windowSizeMs, rateLimit) {
+        if (!Number.isSafeInteger(windowSizeMs) || windowSizeMs < 0 || windowSizeMs > 31536000000) throw new RangeError('invalid window');
+        if (windowSizeMs > 0xFFFFFFFF) {
+            if (!Number.isInteger(rateLimit) || rateLimit < 0 || rateLimit > 0xFFFFFFFF) throw new RangeError('invalid limit');
+            const name = Buffer.from(bucketName);
+            const header = Buffer.alloc(4); header.writeUInt32LE(name.length);
+            const fields = Buffer.alloc(12); fields.writeBigUInt64LE(BigInt(windowSizeMs)); fields.writeUInt32LE(rateLimit, 8);
+            return crypto.createHash('blake2s256').update(Buffer.concat([Buffer.from('ratelimitly.resource.v2\0'), header, name, fields])).digest().subarray(0, 16);
+        }
         return this._derive(RESOURCE_ID_DOMAIN, bucketName, [windowSizeMs, rateLimit]);
     }
 
@@ -284,6 +292,7 @@ class RequestPolicy {
 class RClientConfig {
     constructor(tenant, options = {}) {
         this.tenant = tenant;
+        if (options.wideRateRequests !== undefined) this.tenant.wideRateRequests = options.wideRateRequests === true;
         this.requestPolicy = options.requestPolicy || new RequestPolicy();
         this.dnsRefreshIntervalS = options.dnsRefreshIntervalS !== undefined ? options.dnsRefreshIntervalS : 10;
     }
@@ -398,9 +407,10 @@ class WireProtocol {
 
     static _validateResourceWindows(tenantConfig, resources) {
         const quotas = this._tenantQuotas(tenantConfig);
-        const limit = quotas.rate_window_size_ms_max;
+        const cap = quotas.rate_window_size_ms_max;
+        const limit = typeof cap === 'number' ? cap : cap.kind === 'unlimited' ? Infinity : cap.milliseconds;
         for (const resource of resources) {
-            if (resource.windowSizeMs > limit) {
+            if (!Number.isSafeInteger(resource.windowSizeMs) || resource.windowSizeMs < 0 || resource.windowSizeMs > limit) {
                 throw new ProtocolError(
                     `Resource '${resource.bucketName}' windowSizeMs ${resource.windowSizeMs} exceeds tenant quota rate_window_size_ms_max ${limit}`
                 );
@@ -430,8 +440,12 @@ class WireProtocol {
         return { nonce, encrypted, authTag };
     }
     
-    static createRateRequest(tenantConfig, resources, guards = [], metricsLabel = null, dedupTtlMs = 300) {
+    static createRateRequest(tenantConfig, resources, guards = [], metricsLabel = null, dedupTtlMs = 300, forceWide = false) {
         this._validateResourceWindows(tenantConfig, resources);
+        const wide = forceWide || resources.some(r => r.windowSizeMs > 0xFFFFFFFF);
+        if (wide && tenantConfig.wideRateRequests !== true) throw new ProtocolError('wide-rate server support must be explicitly configured');
+        if (resources.length > 16 || guards.length > 16) throw new ProtocolError('maximum 16 resources/guards');
+        if (wide && resources.some(r => r.windowSizeMs < 1 || r.windowSizeMs > 31536000000)) throw new ProtocolError('invalid wide window');
         const quotas = this._tenantQuotas(tenantConfig);
         if (!Number.isInteger(dedupTtlMs) || dedupTtlMs <= 0 ||
             dedupTtlMs > quotas.dedup_ttl_ms_max) {
@@ -450,7 +464,7 @@ class WireProtocol {
             metricsLabelTlvSize = 4 + paddedBodySize; // TLV header + padded body
         }
 
-        const pduBodySize = 4 + guards.length * 36 + resources.length * 28 + metricsLabelTlvSize; // guard_count + resource_count + blocks + optional TLVs
+        const pduBodySize = 4 + guards.length * 36 + resources.length * (wide ? 32 : 28) + metricsLabelTlvSize; // guard_count + resource_count + blocks + optional TLVs
         const pduSize = 8 + pduBodySize; // PDU header (8 bytes) + body
 
         let authHeaderSize;
@@ -494,7 +508,7 @@ class WireProtocol {
         let pduPos = 0;
         
         // PDU header
-        pduBuffer.writeUInt16LE(PDU_RATE_REQUEST, pduPos); pduPos += 2;
+        pduBuffer.writeUInt16LE(wide ? 0x5751 : PDU_RATE_REQUEST, pduPos); pduPos += 2;
         pduBuffer.writeUInt16LE(pduSize, pduPos); pduPos += 2;
         pduBuffer.writeUInt32LE(effectiveDedupTtlMs, pduPos); pduPos += 4;
         
@@ -526,7 +540,8 @@ class WireProtocol {
                 resource.rateLimit
             );
             bucketId.copy(pduBuffer, pduPos); pduPos += 16;
-            pduBuffer.writeUInt32LE(resource.windowSizeMs, pduPos); pduPos += 4;
+            if (wide) { pduBuffer.writeBigUInt64LE(BigInt(resource.windowSizeMs), pduPos); pduPos += 8; }
+            else { pduBuffer.writeUInt32LE(resource.windowSizeMs, pduPos); pduPos += 4; }
             pduBuffer.writeUInt32LE(resource.rateLimit, pduPos); pduPos += 4;
             pduBuffer.writeUInt16LE(resource.tokensRequested, pduPos); pduPos += 2;
             pduBuffer.writeUInt16LE(0, pduPos); pduPos += 2; // padding for alignment
@@ -691,7 +706,7 @@ class WireProtocol {
         return decrypted;
     }
     
-    static parseRateResponse(data, tenantConfig = null, resources = [], guards = [], expectedRequestId = null) {
+    static parseRateResponse(data, tenantConfig = null, resources = [], guards = [], expectedRequestId = null, forceWide = false) {
         let pos = 0;
         
         // Parse tenant header
@@ -760,7 +775,8 @@ class WireProtocol {
         pos = 0;
         const pduType = pduData.readUInt16LE(pos); pos += 2;
         const pduSize = pduData.readUInt16LE(pos); pos += 2;
-        if (pduType !== PDU_RATE_RESPONSE) {
+        const wide = forceWide || resources.some(r => r.windowSizeMs > 0xFFFFFFFF);
+        if (pduType !== (wide ? 0x5752 : PDU_RATE_RESPONSE)) {
             throw new ProtocolError(`Expected rate response, got: ${pduType.toString(16)}`);
         }
         
@@ -769,6 +785,7 @@ class WireProtocol {
         // Parse guard and resource counts (no unique_id/timestamp in PDU)
         const guardCount = pduData.readUInt16LE(pos); pos += 2;
         const resourceCount = pduData.readUInt16LE(pos); pos += 2;
+        if (guardCount > 16 || resourceCount > 16 || pduSize > pduData.length || pduSize < 12 + guardCount * 36 + resourceCount * (wide ? 32 : 28)) throw new ProtocolError('invalid response size/count');
         const guardResults = [];
         
         for (let i = 0; i < guardCount; i++) {
@@ -802,7 +819,7 @@ class WireProtocol {
         
         for (let i = 0; i < resourceCount; i++) {
             const bucketId = pduData.subarray(pos, pos + 16); pos += 16;
-            const windowMs = pduData.readUInt32LE(pos); pos += 4;
+            const windowMs = wide ? Number(pduData.readBigUInt64LE(pos)) : pduData.readUInt32LE(pos); pos += wide ? 8 : 4;
             const actualRate = pduData.readUInt32LE(pos); pos += 4;
             const tokensDeficit = pduData.readUInt16LE(pos); pos += 2;
             const padding = pduData.readUInt16LE(pos); pos += 2; // skip alignment padding

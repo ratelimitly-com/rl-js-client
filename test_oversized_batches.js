@@ -58,53 +58,12 @@ function makeLatencyBlocks(count) {
 }
 
 function testOversizedRateRequestRejection() {
-  console.log('Testing oversized rate request rejection across auth modes...');
-
-  // 1. AuthMethod.NONE
-  // 40 resources = 40 (tenant) + 4 (auth) + 8 (pdu header) + 4 (counts) + 40 * 28 = 1176 bytes <= 1200 (OK)
-  const reqNone40 = WireProtocol.createRateRequest(tenantNone, makeResources(40), [], null, 1000);
-  assert.strictEqual(reqNone40.length, 1176, '40-resource NONE packet should be 1176 bytes');
-
-  // 41 resources = 40 + 4 + 8 + 4 + 41 * 28 = 1204 bytes > 1200 (REJECT)
-  assert.throws(
-    () => WireProtocol.createRateRequest(tenantNone, makeResources(41), [], null, 1000),
-    (err) => err instanceof RateLimitError && /exceeds maximum datagram size of 1200/i.test(err.message),
-    '41-resource NONE packet must throw RateLimitError'
-  );
-
-  // 2. AuthMethod.COOKIE
-  // 39 resources = 40 (tenant) + 36 (auth) + 8 (pdu header) + 4 (counts) + 39 * 28 = 1180 bytes <= 1200 (OK)
-  const reqCookie39 = WireProtocol.createRateRequest(tenantCookie, makeResources(39), [], null, 1000);
-  assert.strictEqual(reqCookie39.length, 1180, '39-resource COOKIE packet should be 1180 bytes');
-
-  // 40 resources = 40 + 36 + 8 + 4 + 40 * 28 = 1208 bytes > 1200 (REJECT)
-  assert.throws(
-    () => WireProtocol.createRateRequest(tenantCookie, makeResources(40), [], null, 1000),
-    (err) => err instanceof RateLimitError && /exceeds maximum datagram size of 1200/i.test(err.message),
-    '40-resource COOKIE packet must throw RateLimitError'
-  );
-
-  // 3. AuthMethod.AES_GCM
-  // 39 resources = 40 (tenant) + 32 (auth) + 8 (pdu header) + 4 (counts) + 39 * 28 = 1176 bytes <= 1200 (OK)
-  const reqAes39 = WireProtocol.createRateRequest(tenantAes, makeResources(39), [], null, 1000);
-  assert.strictEqual(reqAes39.length, 1176, '39-resource AES packet should be 1176 bytes');
-
-  // 40 resources = 40 + 32 + 8 + 4 + 40 * 28 = 1204 bytes > 1200 (REJECT)
-  assert.throws(
-    () => WireProtocol.createRateRequest(tenantAes, makeResources(40), [], null, 1000),
-    (err) => err instanceof RateLimitError && /exceeds maximum datagram size of 1200/i.test(err.message),
-    '40-resource AES packet must throw RateLimitError'
-  );
-
-  // 4. Metrics label overhead causing boundary crossing
-  // 40 resources with 24-byte label pushes 1176 + (4 + 28) = 1208 bytes > 1200 (REJECT)
-  assert.throws(
-    () => WireProtocol.createRateRequest(tenantNone, makeResources(40), [], 'a'.repeat(24), 1000),
-    (err) => err instanceof RateLimitError && /exceeds maximum datagram size of 1200/i.test(err.message),
-    '40 resources with label exceeding 1200 must throw RateLimitError'
-  );
-
-  console.log('✅ Oversized rate request rejection tests passed');
+  for (const [tenant, authSize] of [[tenantNone,4],[tenantCookie,36],[tenantAes,32]]) {
+    const packet=WireProtocol.createRateRequest(tenant,makeResources(16),[],null,1000);
+    assert.strictEqual(packet.length,40+authSize+12+16*28);
+    assert.throws(()=>WireProtocol.createRateRequest(tenant,makeResources(17),[],null,1000), /maximum 16/);
+    assert.throws(()=>WireProtocol.createRateRequest(tenant,makeResources(16),[],'x'.repeat(1200),1000), RateLimitError);
+  }
 }
 
 function testOversizedLatencyReportRejection() {
@@ -151,7 +110,7 @@ function testOversizedLatencyReportRejection() {
 
 function testExactBoundaryAndGuardBatches() {
   for (const [tenant, authSize, resourceCount] of [
-    [tenantNone, 4, 40], [tenantCookie, 36, 39], [tenantAes, 32, 39]
+    [tenantNone, 4, 16], [tenantCookie, 36, 16], [tenantAes, 32, 16]
   ]) {
     const resources = makeResources(resourceCount);
     const baseSize = 40 + authSize + 12 + resourceCount * 28;
@@ -178,7 +137,7 @@ function testExactBoundaryAndGuardBatches() {
       maxSamples: 100, minSampleThreshold: 10,
     });
     for (const resourceCount of [0, 2]) {
-      const maxGuards = Math.floor((1200 - 40 - authSize - 12 - resourceCount * 28) / 36);
+      const maxGuards = Math.min(16, Math.floor((1200 - 40 - authSize - 12 - resourceCount * 28) / 36));
       const guards = Array(maxGuards).fill(guard);
       const packet = WireProtocol.createRateRequest(tenant, makeResources(resourceCount), guards, null, 1000);
       assert.strictEqual(packet.length, 40 + authSize + 12 + resourceCount * 28 + maxGuards * 36);
@@ -215,14 +174,14 @@ async function testClientRejection() {
   // checkRateLimit Promise rejection
   await assert.rejects(
     client.checkRateLimit(makeResources(41), []),
-    (err) => err instanceof RateLimitError && /exceeds maximum datagram size/i.test(err.message),
+    (err) => err instanceof RateLimitError && /exceeds maximum datagram size|maximum 16/i.test(err.message),
     'checkRateLimit with 41 resources must reject'
   );
 
   // checkRateLimit callback rejection
   await new Promise((resolve, reject) => {
     client.checkRateLimit(makeResources(41), [], (err) => {
-      if (err instanceof RateLimitError && /exceeds maximum datagram size/i.test(err.message)) {
+      if (err instanceof RateLimitError && /exceeds maximum datagram size|maximum 16/i.test(err.message)) {
         resolve();
       } else {
         reject(new Error(`Expected RateLimitError, got: ${err}`));
@@ -233,14 +192,14 @@ async function testClientRejection() {
   // reportLatency Promise rejection
   await assert.rejects(
     client.reportLatency(makeLatencyBlocks(36)),
-    (err) => err instanceof RateLimitError && /exceeds maximum datagram size/i.test(err.message),
+    (err) => err instanceof RateLimitError && /exceeds maximum datagram size|maximum 16/i.test(err.message),
     'reportLatency with 36 blocks must reject'
   );
 
   // reportLatency callback rejection
   await new Promise((resolve, reject) => {
     client.reportLatency(makeLatencyBlocks(36), (err) => {
-      if (err instanceof RateLimitError && /exceeds maximum datagram size/i.test(err.message)) {
+      if (err instanceof RateLimitError && /exceeds maximum datagram size|maximum 16/i.test(err.message)) {
         resolve();
       } else {
         reject(new Error(`Expected RateLimitError, got: ${err}`));

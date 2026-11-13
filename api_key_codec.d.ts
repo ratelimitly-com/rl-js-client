@@ -1,10 +1,12 @@
+export type WindowCap = {kind: 'finite'; milliseconds: number} | {kind: 'unlimited'};
+
 export interface Quotas {
   rate_buckets_max: number;
   latency_services_max: number;
   metrics_labels_max: number;
   latency_buffer_size_max: number;
   dedup_ttl_ms_max: number;
-  rate_window_size_ms_max: number;
+  rate_window_size_ms_max: number | WindowCap;
 }
 
 export interface DecodedApiKey {
@@ -37,7 +39,8 @@ export function encodeApiKey(
   authMethod: 'none' | 'cookie' | 'aes',
   keyId: bigint,
   authSecret?: Uint8Array | Buffer | string,
-  quotas?: Partial<Quotas>
+  quotas?: Partial<Quotas>,
+  formatVersion?: 1 | 2
 ): string;
 
 /**

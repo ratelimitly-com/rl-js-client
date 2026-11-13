@@ -8,6 +8,7 @@ const CHARSET_REV = Object.fromEntries([...CHARSET].map((c, i) => [c, i]));
 const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
 const ALLOWED_METHODS = new Set(["none", "cookie", "aes"]);
 const FORMAT_VERSION = 1;
+const V2_WINDOWS = [0, 1000, 5000, 10000, 15000, 30000, 60000, 120000, 180000, 300000, 600000, 900000, 1800000, 2700000, 3600000, 7200000, 10800000, 18000000, 21600000, 28800000, 43200000, 86400000, 172800000, 432000000, 604800000, 1209600000, 2419200000, 2592000000, 7776000000, 15724800000, 31536000000];
 
 function hrpExpand(hrp) {
   const out = [];
@@ -152,7 +153,7 @@ function writeU32LE(bytes, offset, value) {
   bytes[offset + 3] = (value >>> 24) & 0xff;
 }
 
-function decodeQuotas(payload, offset) {
+function decodeQuotas(payload, offset, version) {
   const word = readU32LE(payload, offset);
   const rateExp = word & 0x1f;
   const latencyExp = (word >>> 5) & 0x1f;
@@ -163,13 +164,14 @@ function decodeQuotas(payload, offset) {
   if (rateExp > 24 || latencyExp > 24 || dedupUnits < 1 || dedupUnits > 200) {
     throw new Error("invalid packed quota word");
   }
+  if (version === 2 && windowExp === 0) throw new Error("reserved v2 window code");
   return {
     rate_buckets_max: 2 ** rateExp,
     latency_services_max: 2 ** latencyExp,
     metrics_labels_max: 2 ** labelsExp,
     latency_buffer_size_max: 2 ** bufferExp,
     dedup_ttl_ms_max: dedupUnits * 10,
-    rate_window_size_ms_max: windowExp === 31 ? 0xffffffff : 2 ** windowExp,
+    rate_window_size_ms_max: version === 2 ? (windowExp === 31 ? {kind:"unlimited"} : {kind:"finite", milliseconds:V2_WINDOWS[windowExp]}) : (windowExp === 31 ? 0xffffffff : 2 ** windowExp),
   };
 }
 
@@ -180,7 +182,7 @@ function normalizeSecret(authSecret) {
   throw new Error("authSecret must be Uint8Array/Buffer/byte array");
 }
 
-function encodeQuotas(quotas) {
+function encodeQuotas(quotas, version) {
   if (!quotas || typeof quotas !== "object") {
     throw new Error("quotas are required for API keys");
   }
@@ -203,8 +205,15 @@ function encodeQuotas(quotas) {
   if (!Number.isInteger(dedup) || dedup < 10 || dedup > 2000 || dedup % 10 !== 0) {
     throw new Error("dedup_ttl_ms_max must be a multiple of 10 in 10..2000");
   }
-  const windowExp = quotas.rate_window_size_ms_max === 0xffffffff
-    ? 31 : exponent("rate_window_size_ms_max", 30);
+  let windowExp;
+  if (version === 2) {
+    const cap = quotas.rate_window_size_ms_max;
+    windowExp = cap && cap.kind === "unlimited" ? 31 :
+      cap && cap.kind === "finite" ? V2_WINDOWS.indexOf(cap.milliseconds) : -1;
+    if (windowExp < 1) throw new Error("invalid v2 window cap");
+  } else {
+    windowExp = quotas.rate_window_size_ms_max === 0xffffffff ? 31 : exponent("rate_window_size_ms_max", 30);
+  }
   const word = (rateExp | (latencyExp << 5) | (labelsExp << 10) |
     (bufferExp << 15) | ((dedup / 10) << 19) | (windowExp << 27)) >>> 0;
   const out = new Uint8Array(4);
@@ -223,33 +232,34 @@ function decodeApiKey(encoded) {
 
   if (authMethod === "none") {
     if (payload.length !== 13) throw new Error(`invalid rl-none payload length: expected 13, got ${payload.length}`);
-    if (payload[0] !== FORMAT_VERSION) throw new Error(`unsupported format version: ${payload[0]}`);
+    if (![1, 2].includes(payload[0])) throw new Error(`unsupported format version: ${payload[0]}`);
     return {
       hrp,
-      formatVersion: FORMAT_VERSION,
+      formatVersion: payload[0],
       authMethod,
       keyId: readU64LE(payload, 1),
       authSecret: new Uint8Array(0),
-      quotas: decodeQuotas(payload, 9),
+      quotas: decodeQuotas(payload, 9, payload[0]),
     };
   }
 
   if (payload.length !== 45) {
     throw new Error(`invalid rl-${authMethod} payload length: expected 45, got ${payload.length}`);
   }
-  if (payload[0] !== FORMAT_VERSION) throw new Error(`unsupported format version: ${payload[0]}`);
+  if (![1, 2].includes(payload[0])) throw new Error(`unsupported format version: ${payload[0]}`);
 
   return {
     hrp,
-    formatVersion: FORMAT_VERSION,
+    formatVersion: payload[0],
     authMethod,
     keyId: readU64LE(payload, 1),
     authSecret: payload.slice(9, 41),
-    quotas: decodeQuotas(payload, 41),
+    quotas: decodeQuotas(payload, 41, payload[0]),
   };
 }
 
-function encodeApiKey(authMethod, keyId, authSecret = new Uint8Array(0), quotas) {
+function encodeApiKey(authMethod, keyId, authSecret = new Uint8Array(0), quotas, formatVersion = FORMAT_VERSION) {
+  if (![1, 2].includes(formatVersion)) throw new Error("unsupported format version");
   if (!ALLOWED_METHODS.has(authMethod)) {
     throw new Error(`unsupported auth method: ${authMethod}`);
   }
@@ -261,7 +271,7 @@ function encodeApiKey(authMethod, keyId, authSecret = new Uint8Array(0), quotas)
   }
 
   const secret = normalizeSecret(authSecret);
-  const quotaBytes = encodeQuotas(quotas);
+  const quotaBytes = encodeQuotas(quotas, formatVersion);
   let payload;
 
   if (authMethod === "none") {
@@ -277,7 +287,7 @@ function encodeApiKey(authMethod, keyId, authSecret = new Uint8Array(0), quotas)
     payload.set(quotaBytes, 41);
   }
 
-  payload[0] = FORMAT_VERSION;
+  payload[0] = formatVersion;
   writeU64LE(payload, 1, keyId);
 
   return bech32Encode(`rl-${authMethod}`, payload);

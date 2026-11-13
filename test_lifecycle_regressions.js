@@ -8,7 +8,7 @@ const { encodeApiKey } = require('./api_key_codec');
 const key = encodeApiKey('none', 1n, new Uint8Array(0), {
   rate_buckets_max: 65536, latency_services_max: 1024, metrics_labels_max: 4096,
   latency_buffer_size_max: 32, dedup_ttl_ms_max: 2000,
-  rate_window_size_ms_max: 0xffffffff,
+  rate_window_size_ms_max: 'unlimited',
 });
 
 class FakeSocket extends EventEmitter {
@@ -62,7 +62,7 @@ function response(request, deficit) {
   const packet = Buffer.from(request);
   packet.writeBigUInt64LE(1n, 4);
   packet.writeUInt8(1, 36);
-  packet.writeUInt16LE(0x5252, 44);
+  packet.writeUInt16LE(0x3252, 44);
   packet.writeUInt16LE(deficit, 80);
   return packet;
 }

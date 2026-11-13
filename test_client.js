@@ -16,7 +16,7 @@ const SAMPLE_QUOTAS = {
     metrics_labels_max: 4096,
     latency_buffer_size_max: 32,
     dedup_ttl_ms_max: 300,
-    rate_window_size_ms_max: 0xffffffff
+    rate_window_size_ms_max: 'unlimited'
 };
 const SAMPLE_NONE_KEY_TENANT_1 = encodeApiKey('none', 1n, new Uint8Array(0), SAMPLE_QUOTAS);
 const SAMPLE_COOKIE_KEY_TENANT_12345 = encodeApiKey(
@@ -52,9 +52,36 @@ function testWireProtocol(callback) {
 
     assert(
         CanonicalIds.bucketId('checkout', 1000, 100).toString('hex')
-            === 'f5cf3ad8b8406854b596ba3614f16eff',
+            === '67f3b7c9ab155308089e20ca8d943909',
         'Canonical checkout bucket ID should match the central vector'
     );
+    assert(
+        CanonicalIds.bucketId('café', 60000, 25).toString('hex')
+            === 'd9cf1a0af970aa9dff86fac0605fae42',
+        'Canonical UTF-8 bucket ID should match the central vector'
+    );
+    assert(
+        CanonicalIds.bucketId(
+            Buffer.from('62696e617279006275636b6574', 'hex'),
+            31536000000,
+            0xFFFF_FFFF
+        ).toString('hex') === '552c6b8185f1d61ebc3ccc65f446ec88',
+        'Canonical max finite window & embedded-NUL bucket ID should match the central vector'
+    );
+    assert(
+        CanonicalIds.bucketId('a', 10, 1).toString('hex')
+            === '5b0b0d61aa7c806a0ff9e5973bf3cacb',
+        'Canonical 10ms bucket ID should match the central vector'
+    );
+    for (const badWindow of [0, 5, 15, 31536000010]) {
+        let threw = false;
+        try {
+            CanonicalIds.bucketId('bad', badWindow, 1);
+        } catch (err) {
+            threw = err instanceof RangeError;
+        }
+        assert(threw, `CanonicalIds.bucketId should reject invalid window ${badWindow}`);
+    }
     assert(
         CanonicalIds.latencyTrackerId('inventory-backend', 10000, 100, 5).toString('hex')
             === '6a17d07a424568304e50d28540f76e67',
@@ -90,13 +117,18 @@ function testWireProtocol(callback) {
     const packet = WireProtocol.createRateRequest(tenantConfig, resources, guards);
     assert(packet.length > 0, 'Packet should not be empty');
     assert(packet.readUInt16LE(0) === 0x4C52, 'Should start with tenant TLV');
+    assert(packet.readUInt16LE(44) === 0x3254, 'Rate request PDU type should be T2 (0x3254)');
     assert(
         packet.subarray(56, 72).toString('hex') === '6a17d07a424568304e50d28540f76e67',
         'Guard should carry the canonical latency-tracker ID'
     );
     assert(
-        packet.subarray(92, 108).toString('hex') === 'f5cf3ad8b8406854b596ba3614f16eff',
-        'Resource should carry the canonical bucket ID'
+        packet.subarray(92, 108).toString('hex') === '67f3b7c9ab155308089e20ca8d943909',
+        'Resource should carry the canonical v2 bucket ID'
+    );
+    assert(
+        packet.readUInt32LE(108) === 100,
+        'Resource block should encode 1000ms window as 100 units of 10ms'
     );
     
     // Test latency report creation
@@ -133,7 +165,7 @@ function testAesAadTamperRejection(callback) {
         metrics_labels_max: 4096,
         latency_buffer_size_max: 64,
         dedup_ttl_ms_max: 300,
-        rate_window_size_ms_max: 0xffffffff
+        rate_window_size_ms_max: 'unlimited'
     });
     const tenantConfig = new TenantConfig(
         'test.example.com',
@@ -151,7 +183,7 @@ function testAesAadTamperRejection(callback) {
     const aad = packet.subarray(0, 56);
 
     const pdu = WireProtocol._decryptPDU(encrypted, nonce, authTag, decoded.authSecret, aad);
-    assert(pdu.readUInt16LE(0) === 0x5452, 'AES request should decrypt to rate request PDU');
+    assert(pdu.readUInt16LE(0) === 0x3254, 'AES request should decrypt to T2 rate request PDU');
 
     const tamperedAad = Buffer.from(aad);
     tamperedAad[4] ^= 0x01;

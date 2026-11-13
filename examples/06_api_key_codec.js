@@ -16,9 +16,9 @@ const {
   bytesToHex
 } = require('../api_key_codec');
 
-// Sample Format v1 AES key with packed quotas
+// Sample Format v2 AES key with packed quotas
 const sampleKey =
-  'rl-aes1qx2kkguvzcenzw7avvc4h7y5kks0z2swtzccyqh62jsg5dml3jkx3m8lpydukeujrdgtruhctlpgl7';
+  'rl-aes1qgpsqqqqqqqqqqqrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqdgrrulcv9v93m';
 
 console.log('1. Decoding existing Bech32 API key:');
 console.log('   Key:', sampleKey);
@@ -39,7 +39,10 @@ if (decoded.quotas) {
   console.log('   - metrics_labels_max:', decoded.quotas.metrics_labels_max);
   console.log('   - latency_buffer_size_max:', decoded.quotas.latency_buffer_size_max);
   console.log('   - dedup_ttl_ms_max:', decoded.quotas.dedup_ttl_ms_max, 'ms');
-  console.log('   - rate_window_size_ms_max:', decoded.quotas.rate_window_size_ms_max, 'ms');
+  console.log('   - rate_window_size_ms_max:',
+    decoded.quotas.rate_window_size_ms_max === 'unlimited'
+      ? 'unlimited'
+      : `${decoded.quotas.rate_window_size_ms_max} ms`);
 }
 
 // 4. Encoding a new key
@@ -51,7 +54,7 @@ const customQuotas = {
   metrics_labels_max: 2048,
   latency_buffer_size_max: 32,
   dedup_ttl_ms_max: 300,
-  rate_window_size_ms_max: 0xffffffff
+  rate_window_size_ms_max: 'unlimited'
 };
 
 const newKey = encodeApiKey('aes', newKeyId, newSecret, customQuotas);

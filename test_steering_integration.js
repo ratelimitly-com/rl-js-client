@@ -23,7 +23,7 @@ const quotas = {
   metrics_labels_max: 4096,
   latency_buffer_size_max: 32,
   dedup_ttl_ms_max: 300,
-  rate_window_size_ms_max: 0xffffffff,
+  rate_window_size_ms_max: 'unlimited',
 };
 const testKey = encodeApiKey('none', 1n, new Uint8Array(0), quotas);
 
@@ -40,14 +40,14 @@ function buildResponse(request, serverId, keepPort, resource) {
   packet.writeUInt16LE(0, pos); pos += 2;
   packet.writeUInt16LE(0x414e, pos); pos += 2;
   packet.writeUInt16LE(4, pos); pos += 2;
-  packet.writeUInt16LE(0x5252, pos); pos += 2;
+  packet.writeUInt16LE(0x3252, pos); pos += 2;
   packet.writeUInt16LE(40, pos); pos += 2;
   packet.writeUInt32LE(0, pos); pos += 4;
   packet.writeUInt16LE(0, pos); pos += 2;
   packet.writeUInt16LE(1, pos); pos += 2;
   CanonicalIds.bucketId(resource.bucketName, resource.windowSizeMs, resource.rateLimit).copy(packet, pos);
   pos += 16;
-  packet.writeUInt32LE(resource.windowSizeMs, pos); pos += 4;
+  packet.writeUInt32LE(resource.windowSizeMs / 10, pos); pos += 4;
   packet.writeUInt32LE(100, pos); pos += 4;
   packet.writeUInt16LE(0, pos); pos += 2; // deficit = 0
   packet.writeUInt16LE(0, pos);

@@ -16,7 +16,7 @@ const quotas = {
   metrics_labels_max: 4096,
   latency_buffer_size_max: 32,
   dedup_ttl_ms_max: 2000,
-  rate_window_size_ms_max: 0xffffffff,
+  rate_window_size_ms_max: 'unlimited',
 };
 const testKey = encodeApiKey('none', 1n, new Uint8Array(0), quotas);
 const tenant = new TenantConfig('test.domain', 1n, AuthMethod.NONE, testKey);

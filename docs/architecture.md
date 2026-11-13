@@ -53,7 +53,7 @@ All binary integers are little-endian. Datagram sizes are capped at 1,200 bytes 
 |   AES:    Type=0x4541, Size=32 (4B header + 12B nonce + 16B)|
 +-------------------------------------------------------------+
 | Protocol Data Unit (PDU) [Plaintext or AES-GCM Ciphertext]  |
-|   0x00..0x01: PDU Type (0x5452=Req, 0x5252=Resp, 0x524C=Rep)|
+|   0x00..0x01: PDU Type (0x3254=Req, 0x3252=Resp, 0x524C=Rep)|
 |   0x02..0x03: PDU Size (uint16)                             |
 |   0x04..0x07: Dedup TTL / Horizon (uint32 ms)               |
 |   0x08..0x09: Guard Count (uint16)                          |

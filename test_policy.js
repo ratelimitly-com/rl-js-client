@@ -25,7 +25,7 @@ assert.strictEqual(new RequestPolicy({
   completionDelivery: false,
 }).horizonMs(300), 100);
 
-const minimumKey = "rl-cookie1qyqsqqqqqqqqqqqpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqqqzqqfs0x84";
+const minimumKey = "rl-cookie1qgqsqqqqqqqqqqqpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqqqzqghe5qw8";
 const tenant = new TenantConfig("example.test", 1n, AuthMethod.COOKIE, minimumKey);
 const policy = new RequestPolicy({ unitMs: 3, replayCount: 1, finalReceiveUnits: 1 });
 const client = new RClient(new RClientConfig(tenant, { requestPolicy: policy }));
@@ -33,12 +33,23 @@ const client = new RClient(new RClientConfig(tenant, { requestPolicy: policy }))
 assert.throws(
   () => WireProtocol.createRateRequest(
     tenant,
-    [new ResourceRequest("bucket", 2, 1, 1)],
+    [new ResourceRequest("bucket", 5000, 1, 1)],
     [],
     null,
     9
   ),
   /rate_window_size_ms_max/
+);
+
+assert.throws(
+  () => WireProtocol.createRateRequest(
+    tenant,
+    [new ResourceRequest("bucket", 15, 1, 1)],
+    [],
+    null,
+    9
+  ),
+  /multiple of 10/
 );
 
 let emptyResult = null;

@@ -18,7 +18,7 @@ const {
 } = require('../client');
 
 const authKey = process.env.RATELIMITLY_AUTH_KEY ||
-  'rl-none1qqqsyqcyq5rqwzqfggq0x7v4q47r2r0v3qy0p7e3240r3r8q9s8qgq6e4l4';
+  'rl-none1qgyqwps9qspsyq2sk8e0shcgndc';
 
 // Configure a High-Availability policy with exponential backoff retry rounds:
 // - unitMs: Base scheduling quantum (e.g. 20ms)

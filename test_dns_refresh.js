@@ -9,7 +9,7 @@ const SAMPLE_NONE_KEY_TENANT_1 = encodeApiKey('none', 1n, new Uint8Array(0), {
   metrics_labels_max: 4096,
   latency_buffer_size_max: 64,
   dedup_ttl_ms_max: 300,
-  rate_window_size_ms_max: 0xffffffff
+  rate_window_size_ms_max: 'unlimited'
 });
 
 test('RClientConfig and createClient default dnsRefreshIntervalS to 10 seconds', () => {

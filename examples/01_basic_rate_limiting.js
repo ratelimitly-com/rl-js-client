@@ -14,7 +14,7 @@ const { createClient, ResourceRequest } = require('../client');
 
 // Replace with your Bech32 API key or pass via RATELIMITLY_AUTH_KEY
 const authKey = process.env.RATELIMITLY_AUTH_KEY ||
-  'rl-none1qqqsyqcyq5rqwzqfggq0x7v4q47r2r0v3qy0p7e3240r3r8q9s8qgq6e4l4';
+  'rl-none1qgyqwps9qspsyq2sk8e0shcgndc';
 
 // createClient automatically derives the tenant DNS domain from the key
 const client = createClient(authKey);

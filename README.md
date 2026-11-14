@@ -201,7 +201,7 @@ Creates and initializes an `RClient` instance.
 
 ### `ResourceRequest(bucketName, windowSizeMs, rateLimit, [tokensRequested])`
 - **`bucketName`** `(string)`: Logical name or identifier for the rate bucket.
-- **`windowSizeMs`** `(number)`: Sliding window length in milliseconds (e.g. `1000`, `60000`).
+- **`windowSizeMs`** `(number)`: Sliding window length in milliseconds (`10..31536000000`, multiple of `10`, e.g. `1000`, `60000`).
 - **`rateLimit`** `(number)`: Maximum allowed tokens within the window.
 - **`tokensRequested`** `(number, default: 1)`: Tokens requested by this operation.
 

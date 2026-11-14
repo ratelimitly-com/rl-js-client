@@ -7,7 +7,39 @@ const CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 const CHARSET_REV = Object.fromEntries([...CHARSET].map((c, i) => [c, i]));
 const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
 const ALLOWED_METHODS = new Set(["none", "cookie", "aes"]);
-const FORMAT_VERSION = 1;
+const FORMAT_VERSION = 2;
+const NAMED_RATE_WINDOW_MS = Object.freeze([
+  1_000,
+  5_000,
+  10_000,
+  15_000,
+  30_000,
+  60_000,
+  120_000,
+  180_000,
+  300_000,
+  600_000,
+  900_000,
+  1_800_000,
+  2_700_000,
+  3_600_000,
+  7_200_000,
+  10_800_000,
+  18_000_000,
+  21_600_000,
+  28_800_000,
+  43_200_000,
+  86_400_000,
+  172_800_000,
+  432_000_000,
+  604_800_000,
+  1_209_600_000,
+  2_419_200_000,
+  2_592_000_000,
+  7_776_000_000,
+  15_724_800_000,
+  31_536_000_000,
+]);
 
 function hrpExpand(hrp) {
   const out = [];
@@ -159,8 +191,8 @@ function decodeQuotas(payload, offset) {
   const labelsExp = (word >>> 10) & 0x1f;
   const bufferExp = (word >>> 15) & 0x0f;
   const dedupUnits = (word >>> 19) & 0xff;
-  const windowExp = (word >>> 27) & 0x1f;
-  if (rateExp > 24 || latencyExp > 24 || dedupUnits < 1 || dedupUnits > 200) {
+  const windowCode = (word >>> 27) & 0x1f;
+  if (rateExp > 24 || latencyExp > 24 || dedupUnits < 1 || dedupUnits > 200 || windowCode === 0) {
     throw new Error("invalid packed quota word");
   }
   return {
@@ -169,7 +201,7 @@ function decodeQuotas(payload, offset) {
     metrics_labels_max: 2 ** labelsExp,
     latency_buffer_size_max: 2 ** bufferExp,
     dedup_ttl_ms_max: dedupUnits * 10,
-    rate_window_size_ms_max: windowExp === 31 ? 0xffffffff : 2 ** windowExp,
+    rate_window_size_ms_max: windowCode === 31 ? "unlimited" : NAMED_RATE_WINDOW_MS[windowCode - 1],
   };
 }
 
@@ -203,10 +235,20 @@ function encodeQuotas(quotas) {
   if (!Number.isInteger(dedup) || dedup < 10 || dedup > 2000 || dedup % 10 !== 0) {
     throw new Error("dedup_ttl_ms_max must be a multiple of 10 in 10..2000");
   }
-  const windowExp = quotas.rate_window_size_ms_max === 0xffffffff
-    ? 31 : exponent("rate_window_size_ms_max", 30);
+  let windowCode;
+  if (quotas.rate_window_size_ms_max === "unlimited") {
+    windowCode = 31;
+  } else {
+    const idx = NAMED_RATE_WINDOW_MS.indexOf(quotas.rate_window_size_ms_max);
+    if (idx < 0) {
+      throw new Error(
+        `rate_window_size_ms_max must be "unlimited" or a supported named duration in ms`
+      );
+    }
+    windowCode = idx + 1;
+  }
   const word = (rateExp | (latencyExp << 5) | (labelsExp << 10) |
-    (bufferExp << 15) | ((dedup / 10) << 19) | (windowExp << 27)) >>> 0;
+    (bufferExp << 15) | ((dedup / 10) << 19) | (windowCode << 27)) >>> 0;
   const out = new Uint8Array(4);
   writeU32LE(out, 0, word);
   return out;
@@ -287,7 +329,7 @@ function bytesToHex(bytes) {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-module.exports = { decodeApiKey, encodeApiKey, bytesToHex };
+module.exports = { decodeApiKey, encodeApiKey, bytesToHex, NAMED_RATE_WINDOW_MS };
 
 if (require.main === module) {
   const sampleQuotas = {
@@ -296,7 +338,7 @@ if (require.main === module) {
     metrics_labels_max: 4096,
     latency_buffer_size_max: 32,
     dedup_ttl_ms_max: 300,
-    rate_window_size_ms_max: 0xffffffff,
+    rate_window_size_ms_max: "unlimited",
   };
   const sample = encodeApiKey("aes", 123n, new Uint8Array(32).fill(1), sampleQuotas);
   const decoded = decodeApiKey(sample);

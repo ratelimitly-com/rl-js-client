@@ -4,7 +4,7 @@ export interface Quotas {
   metrics_labels_max: number;
   latency_buffer_size_max: number;
   dedup_ttl_ms_max: number;
-  rate_window_size_ms_max: number;
+  rate_window_size_ms_max: number | 'unlimited';
 }
 
 export interface DecodedApiKey {

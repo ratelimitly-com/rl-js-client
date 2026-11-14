@@ -143,7 +143,7 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
-      # `npm test` runs test_api_key_v1.js, test_policy.js, test_ha.js,
+      # `npm test` runs test_api_key_v2.js, test_policy.js, test_ha.js,
       # test_steering.js, test_steering_integration.js, test_send_failure.js
       # and test_client.js.
       - name: Run test suite

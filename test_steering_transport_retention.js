@@ -9,7 +9,7 @@ const { encodeApiKey } = require('./api_key_codec');
 const key = encodeApiKey('none', 1n, new Uint8Array(0), {
   rate_buckets_max: 65536, latency_services_max: 1024, metrics_labels_max: 4096,
   latency_buffer_size_max: 32, dedup_ttl_ms_max: 2000,
-  rate_window_size_ms_max: 0xffffffff,
+  rate_window_size_ms_max: 'unlimited',
 });
 
 function acquire(client) {

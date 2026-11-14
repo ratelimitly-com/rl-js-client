@@ -25,14 +25,36 @@ const TLV_AUTH_NONE = 0x414E;
 const TLV_AUTH_COOKIE = 0x4143;
 const TLV_AUTH_AES = 0x4541;
 const TLV_METRICS_LABEL = 0x4C4D;
-const PDU_RATE_REQUEST = 0x5452;
-const PDU_RATE_RESPONSE = 0x5252;
+const PDU_RATE_REQUEST = 0x3254;
+const PDU_RATE_RESPONSE = 0x3252;
 const PDU_LATENCY_REPORT = 0x524C;
 const LATENCY_REPORT_BLOCK_SIZE = 32;
-const RESOURCE_ID_DOMAIN = Buffer.from('ratelimitly.resource.v1\0', 'ascii');
+const RESOURCE_ID_DOMAIN = Buffer.from('ratelimitly.resource.v2\0', 'ascii');
 const LATENCY_TRACKER_ID_DOMAIN = Buffer.from('ratelimitly.latency-tracker.v2\0', 'ascii');
+const RATE_WINDOW_UNIT_MS = 10;
+const MIN_RATE_WINDOW_MS = 10;
+const MAX_RATE_WINDOW_MS = 31_536_000_000;
 const SERVER_ID_EPOCH_S_2025 = 1735689600;
 const SERVER_ID_TIME_SHIFT = 23;
+
+function encodeRateWindow10ms(windowSizeMs, ErrorCtor = RangeError) {
+    if (
+        typeof windowSizeMs !== 'number' ||
+        !Number.isSafeInteger(windowSizeMs) ||
+        windowSizeMs < MIN_RATE_WINDOW_MS ||
+        windowSizeMs > MAX_RATE_WINDOW_MS
+    ) {
+        throw new ErrorCtor(
+            `rate windowSizeMs ${windowSizeMs} must be an integer in ${MIN_RATE_WINDOW_MS}..${MAX_RATE_WINDOW_MS} ms`
+        );
+    }
+    if (windowSizeMs % RATE_WINDOW_UNIT_MS !== 0) {
+        throw new ErrorCtor(
+            `rate windowSizeMs ${windowSizeMs} must be a multiple of ${RATE_WINDOW_UNIT_MS} ms`
+        );
+    }
+    return windowSizeMs / RATE_WINDOW_UNIT_MS;
+}
 
 const AuthMethod = {
     NONE: 'none',
@@ -42,7 +64,8 @@ const AuthMethod = {
 
 class CanonicalIds {
     static bucketId(bucketName, windowSizeMs, rateLimit) {
-        return this._derive(RESOURCE_ID_DOMAIN, bucketName, [windowSizeMs, rateLimit]);
+        const windowSize10ms = encodeRateWindow10ms(windowSizeMs, RangeError);
+        return this._derive(RESOURCE_ID_DOMAIN, bucketName, [windowSize10ms, rateLimit]);
     }
 
     static latencyTrackerId(latencyTrackerName, ttlMs, maxSamples, minSampleThreshold) {
@@ -398,9 +421,10 @@ class WireProtocol {
 
     static _validateResourceWindows(tenantConfig, resources) {
         const quotas = this._tenantQuotas(tenantConfig);
-        const limit = quotas.rate_window_size_ms_max;
+        const limit = quotas ? quotas.rate_window_size_ms_max : 'unlimited';
         for (const resource of resources) {
-            if (resource.windowSizeMs > limit) {
+            encodeRateWindow10ms(resource.windowSizeMs, ProtocolError);
+            if (typeof limit === 'number' && resource.windowSizeMs > limit) {
                 throw new ProtocolError(
                     `Resource '${resource.bucketName}' windowSizeMs ${resource.windowSizeMs} exceeds tenant quota rate_window_size_ms_max ${limit}`
                 );
@@ -520,13 +544,14 @@ class WireProtocol {
         
         // Resources
         for (const resource of resources) {
+            const windowSize10ms = encodeRateWindow10ms(resource.windowSizeMs, ProtocolError);
             const bucketId = CanonicalIds.bucketId(
                 resource.bucketName,
                 resource.windowSizeMs,
                 resource.rateLimit
             );
             bucketId.copy(pduBuffer, pduPos); pduPos += 16;
-            pduBuffer.writeUInt32LE(resource.windowSizeMs, pduPos); pduPos += 4;
+            pduBuffer.writeUInt32LE(windowSize10ms, pduPos); pduPos += 4;
             pduBuffer.writeUInt32LE(resource.rateLimit, pduPos); pduPos += 4;
             pduBuffer.writeUInt16LE(resource.tokensRequested, pduPos); pduPos += 2;
             pduBuffer.writeUInt16LE(0, pduPos); pduPos += 2; // padding for alignment
@@ -802,7 +827,7 @@ class WireProtocol {
         
         for (let i = 0; i < resourceCount; i++) {
             const bucketId = pduData.subarray(pos, pos + 16); pos += 16;
-            const windowMs = pduData.readUInt32LE(pos); pos += 4;
+            const window10ms = pduData.readUInt32LE(pos); pos += 4; // 10 ms units
             const actualRate = pduData.readUInt32LE(pos); pos += 4;
             const tokensDeficit = pduData.readUInt16LE(pos); pos += 2;
             const padding = pduData.readUInt16LE(pos); pos += 2; // skip alignment padding

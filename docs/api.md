@@ -1,5 +1,7 @@
 # JavaScript / TypeScript API Reference
 
+See [physical UDP traffic counters](traffic.md) for `client.getTrafficStats()`.
+
 `ratelimitly-client` provides high-performance, zero-dependency Node.js bindings for RateLimitly distributed rate limiting and latency-based load shedding.
 
 ---

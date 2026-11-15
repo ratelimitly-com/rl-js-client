@@ -235,7 +235,21 @@ export class ServerTracker {
   getStableServers(): ServerEndpoint[];
 }
 
+/** Physical UDP counters; bigint preserves unsigned 64-bit precision. */
+export interface TrafficDirection {
+  readonly datagrams: bigint;
+  readonly payloadBytes: bigint;
+  readonly ipBytes: bigint;
+}
+export interface TrafficStats {
+  readonly sent: TrafficDirection;
+  readonly received: TrafficDirection;
+  readonly sendFailures: bigint;
+  readonly incomplete: boolean;
+}
 export class RClient {
+  /** Immutable lifetime snapshot, retained after destroy(). See docs/api.md. */
+  getTrafficStats(): TrafficStats;
   config: RClientConfig;
   tenantConfig: TenantConfig;
   quotas: Quotas | null;

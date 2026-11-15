@@ -5,6 +5,7 @@
  */
 
 const dgram = require('dgram');
+const { TrafficCounters } = require('./traffic');
 const crypto = require('crypto');
 const dns = require('dns');
 const { decodeApiKey } = require('./api_key_codec');
@@ -902,6 +903,7 @@ class RClient {
 
     constructor(config) {
         this.config = config;
+        this._traffic = new TrafficCounters();
         this.serverTracker = new ServerTracker();
         this.quotas = WireProtocol._tenantQuotas(config.tenant);
         if (this.quotas && this.quotas.dedup_ttl_ms_max && this.config.requestPolicy) {
@@ -1003,6 +1005,7 @@ class RClient {
                 };
 
                 socket.on('message', (msg, rinfo) => {
+                    if (Buffer.isBuffer(msg)) this._traffic.record('received', msg.length, rinfo && rinfo.address);
                     if (!Buffer.isBuffer(msg) || msg.length < 28) return;
                     const reqIdHex = msg.subarray(12, 28).toString('hex');
                     const handler = transport.inFlight.get(reqIdHex);
@@ -1075,6 +1078,7 @@ class RClient {
                 };
 
                 newSocket.on('message', (msg, rinfo) => {
+                    if (Buffer.isBuffer(msg)) this._traffic.record('received', msg.length, rinfo && rinfo.address);
                     if (!Buffer.isBuffer(msg) || msg.length < 28) return;
                     const reqIdHex = msg.subarray(12, 28).toString('hex');
                     const handler = newTransport.inFlight.get(reqIdHex);
@@ -1415,7 +1419,7 @@ class RClient {
                     let lastError = null;
                     for (const server of targets) {
                         try {
-                            socket.send(packet, server.port, server.ip, (error) => {
+                            this._sendDatagram(socket, packet, server, (error) => {
                                 if (error) lastError = error; else delivered += 1;
                                 pending -= 1;
                                 if (pending > 0 || bestEffort || terminal || this._destroyed) return;
@@ -1663,7 +1667,7 @@ class RClient {
 
                 for (const server of this.servers) {
                     try {
-                        socket.send(packet, server.port, server.ip, (sendErr) => {
+                        this._sendDatagram(socket, packet, server, (sendErr) => {
                             if (sendErr) {
                                 console.warn(`Failed to send to ${server.ip}:${server.port}: ${sendErr.message}`);
                             }
@@ -1680,6 +1684,30 @@ class RClient {
         });
     }
     
+    getTrafficStats() {
+        return this._traffic.snapshot();
+    }
+
+    _sendDatagram(socket, packet, server, callback) {
+        this._traffic.pending++;
+        let settled = false;
+        try {
+            socket.send(packet, server.port, server.ip, error => {
+                settled = true;
+                this._traffic.pending--;
+                if (error) this._traffic.failedSend();
+                else this._traffic.record('sent', packet.length, server.ip);
+                callback(error);
+            });
+        } catch (error) {
+            if (!settled) {
+                this._traffic.pending--;
+                this._traffic.failedSend();
+            }
+            throw error;
+        }
+    }
+
     checkRateLimit(resources, guards, metricsLabel, callback) {
         // Handle optional parameters
         if (typeof guards === 'string') {

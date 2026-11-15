@@ -27,20 +27,21 @@ async function main() {
   const id = 10 * 2 ** 23 + 1;
   client.servers = [{ ip: "127.0.0.1", port: server.address().port, serverId: id }];
   client.lastDnsRefresh = Date.now();
-  const requests = [], replies = [];
+  const requests = [], replies = [], ports = [];
   let reportReceived;
   const reportDone = new Promise(resolve => { reportReceived = resolve; });
   server.on("message", (packet, remote) => {
     requests.push(packet);
+    ports.push(remote.port);
     if (requests.length === 1) return; // require a real replay
     if (requests.length === 3) { reportReceived(); return; }
     assert.deepEqual(requests[0], packet);
     const reply = Buffer.from(packet);
     reply.writeBigUInt64LE(BigInt(id), 4);
-    reply[36] = 1;
+    reply[36] = 0; // exercise source-port replacement without resetting totals
     reply.writeUInt16LE(0x3252, 44);
     reply.writeUInt16LE(0, 80);
-    for (const response of [Buffer.from("invalid"), reply]) {
+    for (const response of [Buffer.alloc(4200), reply]) {
       replies.push(response);
       server.send(response, remote.port, remote.address);
     }
@@ -62,10 +63,18 @@ async function main() {
     assert.equal(stats.received.datagrams, 2n);
     assert.equal(stats.received.ipBytes, BigInt(replies.reduce((n, p) => n + p.length + 28, 0)));
     assert.equal(stats.incomplete, false);
+    assert.notEqual(ports[1], ports[2]);
     client.destroy();
     assert.deepEqual(client.getTrafficStats(), stats);
     assert.throws(() => client._sendDatagram({ send() { throw Error("closed"); } }, Buffer.alloc(5), { ip: "127.0.0.1", port: 9 }, () => {}));
     assert.equal(client.getTrafficStats().sendFailures, 1n);
+    assert.equal(client.getTrafficStats().sent.datagrams, 3n);
+    let finishSend;
+    client._sendDatagram({ send(_p, _port, _ip, cb) { finishSend = cb; } }, Buffer.alloc(5), { ip: "127.0.0.1", port: 9 }, () => {});
+    assert.equal(client.getTrafficStats().incomplete, true);
+    finishSend(Error("asynchronous send failure"));
+    assert.equal(client.getTrafficStats().incomplete, false);
+    assert.equal(client.getTrafficStats().sendFailures, 2n);
     assert.equal(client.getTrafficStats().sent.datagrams, 3n);
   } finally {
     client.destroy();

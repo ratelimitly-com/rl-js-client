@@ -185,6 +185,9 @@ const client = createClient(process.env.RATELIMITLY_AUTH_KEY, null, {
 
 ## API Reference
 
+[`client.getTrafficStats()`](docs/traffic.md) provides exact physical UDP
+counters, including retries and replica traffic, separately from request results.
+
 ### `createClient(authKey, [dnsName], [options])`
 Creates and initializes an `RClient` instance.
 
